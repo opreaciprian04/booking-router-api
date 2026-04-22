@@ -213,7 +213,13 @@ def optimize():
 @app.route("/")
 def home():
     return "Romania Pickup Optimizer LIVE"
-
+@app.route("/ping", methods=["GET", "POST"])
+def ping():
+    return jsonify({
+        "ok": True,
+        "method": request.method,
+        "message": "new code live"
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
