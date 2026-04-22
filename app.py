@@ -1,74 +1,86 @@
 from flask import Flask, request, jsonify
 import math
 import os
+import traceback
 from collections import defaultdict
 
-aplicatie = Flask(__name__)
+# ==================================================
+# APP
+# ==================================================
+
+app = Flask(__name__)
 
 # ==================================================
-# CONFIGURARE
+# CONFIG
 # ==================================================
 
 TIMISOARA = {
-    "nume": "Hub Timisoara",
+    "name": "Timisoara Hub",
     "lat": 45.7489,
     "lng": 21.2087
 }
 
-MAX_LOCURI = 8
+MAX_SEATS = 8
 
 # ==================================================
-# FUNCTII AJUTATOARE
+# HELPERS
 # ==================================================
 
-def numar(valoare, implicit=0):
+def to_float(value, default=0.0):
     try:
-        return float(valoare)
+        return float(value)
     except:
-        return implicit
+        return default
 
 
-def distanta_haversine(lat1, lon1, lat2, lon2):
-    raza = 6371
+def to_int(value, default=1):
+    try:
+        return int(value)
+    except:
+        return default
 
-    lat1 = numar(lat1)
-    lon1 = numar(lon1)
-    lat2 = numar(lat2)
-    lon2 = numar(lon2)
 
-    diferenta_lat = math.radians(lat2 - lat1)
-    diferenta_lon = math.radians(lon2 - lon1)
+def haversine(lat1, lon1, lat2, lon2):
+    """
+    Distance in KM
+    """
+    R = 6371
+
+    lat1 = to_float(lat1)
+    lon1 = to_float(lon1)
+    lat2 = to_float(lat2)
+    lon2 = to_float(lon2)
+
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
 
     a = (
-        math.sin(diferenta_lat / 2) ** 2 +
-        math.cos(math.radians(lat1)) *
-        math.cos(math.radians(lat2)) *
-        math.sin(diferenta_lon / 2) ** 2
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
     )
 
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return round(raza * c, 2)
+    return round(R * c, 2)
 
 
-def locuri_pasager(pasager):
-    try:
-        locuri = int(pasager.get("locuri", pasager.get("seats", 1)))
+def seats_of(passenger):
+    seats = to_int(passenger.get("locuri", passenger.get("seats", 1)), 1)
 
-        if locuri < 1:
-            return 1
-
-        if locuri > MAX_LOCURI:
-            return MAX_LOCURI
-
-        return locuri
-    except:
+    if seats < 1:
         return 1
 
+    if seats > MAX_SEATS:
+        return MAX_SEATS
 
-def tara_din_adresa(adresa):
-    text = str(adresa).lower()
+    return seats
 
-    dictionar = {
+
+def detect_country(address):
+    text = str(address).lower()
+
+    countries = {
         "Germania": ["germany", "deutschland", "germania"],
         "Italia": ["italy", "italia"],
         "Belgia": ["belgium", "belgia"],
@@ -79,216 +91,220 @@ def tara_din_adresa(adresa):
         "Romania": ["romania"]
     }
 
-    for tara, cuvinte in dictionar.items():
-        for cuvant in cuvinte:
-            if cuvant in text:
-                return tara
+    for country, words in countries.items():
+        for word in words:
+            if word in text:
+                return country
 
     return "Alta"
 
 
-def distanta_pickup_la_hub(pasager):
-    return distanta_haversine(
-        pasager.get("pickup_lat"),
-        pasager.get("pickup_lng"),
+def pickup_to_hub_distance(p):
+    return haversine(
+        p.get("pickup_lat"),
+        p.get("pickup_lng"),
         TIMISOARA["lat"],
         TIMISOARA["lng"]
     )
 
 
-def distanta_destinatie_din_hub(pasager):
-    return distanta_haversine(
+def hub_to_destination_distance(p):
+    return haversine(
         TIMISOARA["lat"],
         TIMISOARA["lng"],
-        pasager.get("destination_lat"),
-        pasager.get("destination_lng")
+        p.get("destination_lat"),
+        p.get("destination_lng")
     )
 
 
+def safe_address(value, fallback="Necunoscut"):
+    if value is None:
+        return fallback
+    txt = str(value).strip()
+    return txt if txt else fallback
+
+
 # ==================================================
-# ETAPA 1
-# Preluare -> Timisoara
+# STAGE 1
+# Pickup -> Timisoara Hub
 # ==================================================
 
-def construieste_etapa1(lista_pasageri):
-    masini = []
-    id_masina = 1
+def build_stage_1(bookings):
+    vehicles = []
+    vehicle_id = 1
+    remaining = bookings[:]
 
-    ramasi = lista_pasageri[:]
+    while remaining:
+        route = []
+        occupied = 0
 
-    while ramasi:
-        masina = []
-        locuri_ocupate = 0
+        first = max(remaining, key=pickup_to_hub_distance)
 
-        curent = max(ramasi, key=distanta_pickup_la_hub)
+        route.append(first)
+        occupied += seats_of(first)
+        remaining.remove(first)
 
-        masina.append(curent)
-        locuri_ocupate += locuri_pasager(curent)
-        ramasi.remove(curent)
+        while remaining:
+            last = route[-1]
 
-        while ramasi:
-            ultimul = masina[-1]
-
-            urmator = min(
-                ramasi,
-                key=lambda x: distanta_haversine(
-                    ultimul["pickup_lat"],
-                    ultimul["pickup_lng"],
-                    x["pickup_lat"],
-                    x["pickup_lng"]
+            nearest = min(
+                remaining,
+                key=lambda x: haversine(
+                    last.get("pickup_lat"),
+                    last.get("pickup_lng"),
+                    x.get("pickup_lat"),
+                    x.get("pickup_lng")
                 )
             )
 
-            if locuri_ocupate + locuri_pasager(urmator) > MAX_LOCURI:
+            if occupied + seats_of(nearest) > MAX_SEATS:
                 break
 
-            masina.append(urmator)
-            locuri_ocupate += locuri_pasager(urmator)
-            ramasi.remove(urmator)
+            route.append(nearest)
+            occupied += seats_of(nearest)
+            remaining.remove(nearest)
 
-        traseu = [p["pickup_address"] for p in masina]
-        traseu.append("Hub Timisoara")
-
-        masini.append({
-            "vehicul": f"RO-{id_masina}",
-            "traseu": traseu,
-            "pasageri": masina,
-            "locuri_ocupate": locuri_ocupate,
-            "locuri_libere": MAX_LOCURI - locuri_ocupate,
-            "numar_pasageri": len(masina)
+        vehicles.append({
+            "vehicle": f"RO-{vehicle_id}",
+            "occupied_seats": occupied,
+            "free_seats": MAX_SEATS - occupied,
+            "passengers_count": len(route),
+            "route": [safe_address(p.get("pickup_address")) for p in route] + ["Timisoara Hub"],
+            "passengers": route
         })
 
-        id_masina += 1
+        vehicle_id += 1
 
-    return masini
+    return vehicles
 
 
 # ==================================================
-# ETAPA 2
-# Timisoara -> Destinatii
+# STAGE 2
+# Timisoara -> Europe Destinations
 # ==================================================
 
-def construieste_etapa2(lista_pasageri):
-    masini = []
-    id_masina = 1
+def build_stage_2(bookings):
+    grouped = defaultdict(list)
 
-    grupate = defaultdict(list)
+    for booking in bookings:
+        country = detect_country(booking.get("destination_address"))
+        grouped[country].append(booking)
 
-    for pasager in lista_pasageri:
-        grupate[tara_din_adresa(pasager["destination_address"])].append(pasager)
+    vehicles = []
+    vehicle_id = 1
 
-    for tara, pasageri in grupate.items():
+    for country, passengers in grouped.items():
+        remaining = passengers[:]
 
-        ramasi = pasageri[:]
+        while remaining:
+            route = []
+            occupied = 0
 
-        while ramasi:
-            masina = []
-            locuri_ocupate = 0
+            first = min(remaining, key=hub_to_destination_distance)
 
-            curent = min(
-                ramasi,
-                key=lambda x: distanta_destinatie_din_hub(x)
-            )
+            route.append(first)
+            occupied += seats_of(first)
+            remaining.remove(first)
 
-            masina.append(curent)
-            locuri_ocupate += locuri_pasager(curent)
-            ramasi.remove(curent)
+            while remaining:
+                last = route[-1]
 
-            while ramasi:
-                ultimul = masina[-1]
-
-                urmator = min(
-                    ramasi,
-                    key=lambda x: distanta_haversine(
-                        ultimul["destination_lat"],
-                        ultimul["destination_lng"],
-                        x["destination_lat"],
-                        x["destination_lng"]
+                nearest = min(
+                    remaining,
+                    key=lambda x: haversine(
+                        last.get("destination_lat"),
+                        last.get("destination_lng"),
+                        x.get("destination_lat"),
+                        x.get("destination_lng")
                     )
                 )
 
-                if locuri_ocupate + locuri_pasager(urmator) > MAX_LOCURI:
+                if occupied + seats_of(nearest) > MAX_SEATS:
                     break
 
-                masina.append(urmator)
-                locuri_ocupate += locuri_pasager(urmator)
-                ramasi.remove(urmator)
+                route.append(nearest)
+                occupied += seats_of(nearest)
+                remaining.remove(nearest)
 
-            traseu = ["Hub Timisoara"] + [
-                p["destination_address"] for p in masina
-            ]
-
-            masini.append({
-                "vehicul": f"EU-{id_masina}",
-                "tara": tara,
-                "traseu": traseu,
-                "pasageri": masina,
-                "locuri_ocupate": locuri_ocupate,
-                "locuri_libere": MAX_LOCURI - locuri_ocupate,
-                "numar_pasageri": len(masina)
+            vehicles.append({
+                "vehicle": f"EU-{vehicle_id}",
+                "country": country,
+                "occupied_seats": occupied,
+                "free_seats": MAX_SEATS - occupied,
+                "passengers_count": len(route),
+                "route": ["Timisoara Hub"] + [
+                    safe_address(p.get("destination_address")) for p in route
+                ],
+                "passengers": route
             })
 
-            id_masina += 1
+            vehicle_id += 1
 
-    return masini
+    return vehicles
 
 
 # ==================================================
-# RUTE API
+# ROUTES
 # ==================================================
 
-@aplicatie.route("/", methods=["GET"])
-def acasa():
+@app.route("/", methods=["GET"])
+def home():
     return jsonify({
         "status": "online",
-        "serviciu": "Optimizator Romania Pickup V2"
+        "service": "Romania Pickup Optimizer Live"
     })
 
 
-@aplicatie.route("/ping", methods=["GET", "POST"])
+@app.route("/ping", methods=["GET", "POST"])
 def ping():
     return jsonify({
         "ok": True,
-        "metoda": request.method,
-        "mesaj": "API functioneaza"
+        "method": request.method
     })
 
 
-@aplicatie.route("/optimize", methods=["POST"])
-def optimizeaza():
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "healthy": True
+    })
+
+
+@app.route("/optimize", methods=["POST"])
+def optimize():
     try:
-        date = request.get_json(force=True, silent=True) or {}
+        payload = request.get_json(silent=True) or {}
+        bookings = payload.get("bookings", [])
 
-        rezervari = date.get("bookings", [])
-
-        if not isinstance(rezervari, list):
+        if not isinstance(bookings, list):
             return jsonify({
                 "success": False,
-                "eroare": "bookings trebuie sa fie lista"
+                "error": "bookings must be an array"
             }), 400
 
-        etapa1 = construieste_etapa1(rezervari)
-        etapa2 = construieste_etapa2(rezervari)
+        stage1 = build_stage_1(bookings)
+        stage2 = build_stage_2(bookings)
 
         return jsonify({
             "success": True,
             "hub": "Timisoara",
-            "total_rezervari": len(rezervari),
-            "etapa1_preluare_la_hub": etapa1,
-            "etapa2_hub_la_destinatie": etapa2
+            "total_bookings": len(bookings),
+            "stage_1_country_pickups": stage1,
+            "stage_2_europe_routes": stage2
         })
 
-    except Exception as eroare:
+    except Exception as e:
         return jsonify({
             "success": False,
-            "eroare": str(eroare)
+            "error": str(e),
+            "trace": traceback.format_exc()
         }), 500
 
 
 # ==================================================
-# PORNIRE
+# START
 # ==================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    aplicatie.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)
