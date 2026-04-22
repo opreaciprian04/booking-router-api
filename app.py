@@ -108,48 +108,53 @@ def destination_distance_from_hub(p):
 # ==================================================
 
 def build_stage1(passengers):
-    passengers = sorted(
-        passengers,
-        key=pickup_distance_to_hub,
-        reverse=True
-    )
-
     vans = []
     van_id = 1
 
-    while passengers:
-        seats_used = 0
-        current = []
-        remaining = []
+    remaining = passengers[:]
 
-        for p in passengers:
-            s = seats_of(p)
+    while remaining:
+        van = []
+        seats = 0
 
-            if seats_used + s <= MAX_SEATS:
-                current.append(p)
-                seats_used += s
-            else:
-                remaining.append(p)
+        # start din cel mai îndepărtat
+        current = max(remaining, key=nearest_to_hub)
+        van.append(current)
+        seats += int(current.get("seats", 1))
+        remaining.remove(current)
 
-        route_passengers = sorted(
-            current,
-            key=pickup_distance_to_hub,
-            reverse=True
-        )
+        while remaining:
+            last = van[-1]
 
-        route = [x.get("pickup_address", "Unknown") for x in route_passengers]
+            next_p = min(
+                remaining,
+                key=lambda x: haversine(
+                    last["pickup_lat"],
+                    last["pickup_lng"],
+                    x["pickup_lat"],
+                    x["pickup_lng"]
+                )
+            )
+
+            if seats + int(next_p.get("seats", 1)) > MAX_SEATS:
+                break
+
+            van.append(next_p)
+            seats += int(next_p.get("seats", 1))
+            remaining.remove(next_p)
+
+        route = [p["pickup_address"] for p in van]
         route.append("Timisoara Hub")
 
         vans.append({
             "vehicle": f"RO-{van_id}",
-            "used_seats": seats_used,
-            "free_seats": MAX_SEATS - seats_used,
             "route": route,
-            "passengers_count": len(current),
-            "passengers": current
+            "passengers": van,
+            "used_seats": seats,
+            "free_seats": MAX_SEATS - seats,
+            "passengers_count": len(van)
         })
 
-        passengers = remaining
         van_id += 1
 
     return vans
@@ -161,73 +166,66 @@ def build_stage1(passengers):
 # ==================================================
 
 def build_stage2(passengers):
-    grouped = defaultdict(list)
-
-    for p in passengers:
-        country = country_from_address(
-            p.get("destination_address", "")
-        )
-        grouped[country].append(p)
-
     vans = []
     van_id = 1
 
+    grouped = defaultdict(list)
+
+    for p in passengers:
+        grouped[country_from_address(p["destination_address"])].append(p)
+
     for country, plist in grouped.items():
 
-        plist = sorted(
-            plist,
-            key=destination_distance_from_hub
-        )
+        remaining = plist[:]
 
-        current = []
-        seats_used = 0
+        while remaining:
+            van = []
+            seats = 0
 
-        for p in plist:
-            s = seats_of(p)
+            current = min(
+                remaining,
+                key=lambda x: destination_distance_from_hub(x)
+            )
 
-            if seats_used + s <= MAX_SEATS:
-                current.append(p)
-                seats_used += s
-            else:
-                route = ["Timisoara Hub"] + [
-                    x.get("destination_address", "Unknown")
-                    for x in current
-                ]
+            van.append(current)
+            seats += int(current.get("seats", 1))
+            remaining.remove(current)
 
-                vans.append({
-                    "vehicle": f"EU-{van_id}",
-                    "country": country,
-                    "used_seats": seats_used,
-                    "free_seats": MAX_SEATS - seats_used,
-                    "route": route,
-                    "passengers_count": len(current),
-                    "passengers": current
-                })
+            while remaining:
+                last = van[-1]
 
-                van_id += 1
-                current = [p]
-                seats_used = s
+                next_p = min(
+                    remaining,
+                    key=lambda x: haversine(
+                        last["destination_lat"],
+                        last["destination_lng"],
+                        x["destination_lat"],
+                        x["destination_lng"]
+                    )
+                )
 
-        if current:
-            route = ["Timisoara Hub"] + [
-                x.get("destination_address", "Unknown")
-                for x in current
-            ]
+                if seats + int(next_p.get("seats", 1)) > MAX_SEATS:
+                    break
+
+                van.append(next_p)
+                seats += int(next_p.get("seats", 1))
+                remaining.remove(next_p)
+
+            route = ["Timisoara Hub"] + [p["destination_address"] for p in van]
 
             vans.append({
                 "vehicle": f"EU-{van_id}",
                 "country": country,
-                "used_seats": seats_used,
-                "free_seats": MAX_SEATS - seats_used,
                 "route": route,
-                "passengers_count": len(current),
-                "passengers": current
+                "passengers": van,
+                "used_seats": seats,
+                "free_seats": MAX_SEATS - seats,
+                "passengers_count": len(van)
             })
 
             van_id += 1
 
     return vans
-
 
 # ==================================================
 # ROUTES
