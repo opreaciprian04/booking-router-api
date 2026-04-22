@@ -1,12 +1,13 @@
 from flask import Flask, request, jsonify
 import math
+import os
 from collections import defaultdict
 
 app = Flask(__name__)
 
-# ==========================
+# ==================================================
 # CONFIG
-# ==========================
+# ==================================================
 
 TIMISOARA = {
     "name": "Timisoara Hub",
@@ -16,171 +17,211 @@ TIMISOARA = {
 
 MAX_SEATS = 8
 
-# ==========================
+# ==================================================
 # HELPERS
-# ==========================
+# ==================================================
+
+def num(v, default=0):
+    try:
+        return float(v)
+    except:
+        return default
+
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
+
+    lat1 = num(lat1)
+    lon1 = num(lon1)
+    lat2 = num(lat2)
+    lon2 = num(lon2)
+
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
 
     a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
+        math.sin(dlat / 2) ** 2 +
+        math.cos(math.radians(lat1)) *
+        math.cos(math.radians(lat2)) *
+        math.sin(dlon / 2) ** 2
     )
 
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+    return round(R * c, 2)
 
 
-def nearest_to_hub(passenger):
+def seats_of(p):
+    try:
+        s = int(p.get("seats", 1))
+        if s < 1:
+            return 1
+        if s > MAX_SEATS:
+            return MAX_SEATS
+        return s
+    except:
+        return 1
+
+
+def country_from_address(address):
+    txt = str(address).lower()
+
+    mapping = {
+        "Germany": ["germany", "deutschland"],
+        "Italy": ["italy", "italia"],
+        "Belgium": ["belgium", "belgia"],
+        "Netherlands": ["netherlands", "holland"],
+        "Austria": ["austria"],
+        "France": ["france"],
+        "Spain": ["spain", "espana"],
+        "Romania": ["romania"]
+    }
+
+    for country, words in mapping.items():
+        for w in words:
+            if w in txt:
+                return country
+
+    return "Other"
+
+
+def pickup_distance_to_hub(p):
     return haversine(
-        passenger["pickup_lat"],
-        passenger["pickup_lng"],
+        p.get("pickup_lat"),
+        p.get("pickup_lng"),
         TIMISOARA["lat"],
         TIMISOARA["lng"]
     )
 
 
-def country_from_address(address):
-    txt = address.lower()
-
-    if "germany" in txt or "deutschland" in txt:
-        return "Germany"
-    if "italy" in txt or "italia" in txt:
-        return "Italy"
-    if "belgium" in txt or "belgia" in txt:
-        return "Belgium"
-    if "netherlands" in txt or "holland" in txt:
-        return "Netherlands"
-    if "austria" in txt:
-        return "Austria"
-
-    return "Other"
+def destination_distance_from_hub(p):
+    return haversine(
+        TIMISOARA["lat"],
+        TIMISOARA["lng"],
+        p.get("destination_lat"),
+        p.get("destination_lng")
+    )
 
 
-# ==========================
+# ==================================================
 # STAGE 1
 # Pickup -> Timisoara
-# ==========================
+# ==================================================
 
 def build_stage1(passengers):
-    # sortăm cei mai departe de hub primii
-    sorted_passengers = sorted(
+    passengers = sorted(
         passengers,
-        key=nearest_to_hub,
+        key=pickup_distance_to_hub,
         reverse=True
     )
 
     vans = []
     van_id = 1
 
-    while sorted_passengers:
+    while passengers:
         seats_used = 0
-        group = []
+        current = []
         remaining = []
 
-        for p in sorted_passengers:
-            seats = int(p.get("seats", 1))
+        for p in passengers:
+            s = seats_of(p)
 
-            if seats_used + seats <= MAX_SEATS:
-                group.append(p)
-                seats_used += seats
+            if seats_used + s <= MAX_SEATS:
+                current.append(p)
+                seats_used += s
             else:
                 remaining.append(p)
 
-        route_points = sorted(
-            group,
-            key=lambda x: nearest_to_hub(x),
+        route_passengers = sorted(
+            current,
+            key=pickup_distance_to_hub,
             reverse=True
         )
 
-        route = [x["pickup_address"] for x in route_points]
+        route = [x.get("pickup_address", "Unknown") for x in route_passengers]
         route.append("Timisoara Hub")
 
         vans.append({
             "vehicle": f"RO-{van_id}",
             "used_seats": seats_used,
+            "free_seats": MAX_SEATS - seats_used,
             "route": route,
-            "passengers": group
+            "passengers_count": len(current),
+            "passengers": current
         })
 
+        passengers = remaining
         van_id += 1
-        sorted_passengers = remaining
 
     return vans
 
 
-# ==========================
+# ==================================================
 # STAGE 2
-# Timisoara -> External destinations
-# ==========================
+# Timisoara -> Destinations
+# ==================================================
 
 def build_stage2(passengers):
-    grouped_by_country = defaultdict(list)
+    grouped = defaultdict(list)
 
     for p in passengers:
         country = country_from_address(
-            p["destination_address"]
+            p.get("destination_address", "")
         )
-        grouped_by_country[country].append(p)
+        grouped[country].append(p)
 
     vans = []
     van_id = 1
 
-    for country, plist in grouped_by_country.items():
+    for country, plist in grouped.items():
 
-        # sort după distanță față de Timișoara
         plist = sorted(
             plist,
-            key=lambda x: haversine(
-                TIMISOARA["lat"],
-                TIMISOARA["lng"],
-                x["destination_lat"],
-                x["destination_lng"]
-            )
+            key=destination_distance_from_hub
         )
 
-        temp = []
+        current = []
         seats_used = 0
 
         for p in plist:
-            seats = int(p.get("seats", 1))
+            s = seats_of(p)
 
-            if seats_used + seats <= MAX_SEATS:
-                temp.append(p)
-                seats_used += seats
+            if seats_used + s <= MAX_SEATS:
+                current.append(p)
+                seats_used += s
             else:
                 route = ["Timisoara Hub"] + [
-                    x["destination_address"] for x in temp
+                    x.get("destination_address", "Unknown")
+                    for x in current
                 ]
 
                 vans.append({
                     "vehicle": f"EU-{van_id}",
                     "country": country,
                     "used_seats": seats_used,
+                    "free_seats": MAX_SEATS - seats_used,
                     "route": route,
-                    "passengers": temp
+                    "passengers_count": len(current),
+                    "passengers": current
                 })
 
                 van_id += 1
-                temp = [p]
-                seats_used = seats
+                current = [p]
+                seats_used = s
 
-        if temp:
+        if current:
             route = ["Timisoara Hub"] + [
-                x["destination_address"] for x in temp
+                x.get("destination_address", "Unknown")
+                for x in current
             ]
 
             vans.append({
                 "vehicle": f"EU-{van_id}",
                 "country": country,
                 "used_seats": seats_used,
+                "free_seats": MAX_SEATS - seats_used,
                 "route": route,
-                "passengers": temp
+                "passengers_count": len(current),
+                "passengers": current
             })
 
             van_id += 1
@@ -188,38 +229,62 @@ def build_stage2(passengers):
     return vans
 
 
-# ==========================
-# MAIN API
-# ==========================
+# ==================================================
+# ROUTES
+# ==================================================
 
-@app.route("/optimize", methods=["POST"])
-def optimize():
-
-    data = request.json
-
-    passengers = data.get("bookings", [])
-
-    stage1 = build_stage1(passengers)
-    stage2 = build_stage2(passengers)
-
+@app.route("/", methods=["GET"])
+def home():
     return jsonify({
-        "success": True,
-        "hub": "Timisoara",
-        "stage1_pickup_to_hub": stage1,
-        "stage2_hub_to_destination": stage2
+        "status": "online",
+        "service": "Romania Pickup Optimizer V2"
     })
 
 
-@app.route("/")
-def home():
-    return "Romania Pickup Optimizer LIVE"
 @app.route("/ping", methods=["GET", "POST"])
 def ping():
     return jsonify({
         "ok": True,
         "method": request.method,
-        "message": "new code live"
+        "message": "API works"
     })
 
+
+@app.route("/optimize", methods=["POST"])
+def optimize():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+
+        bookings = data.get("bookings", [])
+
+        if not isinstance(bookings, list):
+            return jsonify({
+                "success": False,
+                "error": "bookings must be array"
+            }), 400
+
+        stage1 = build_stage1(bookings)
+        stage2 = build_stage2(bookings)
+
+        return jsonify({
+            "success": True,
+            "hub": "Timisoara",
+            "total_bookings": len(bookings),
+            "stage1_pickup_to_hub": stage1,
+            "stage2_hub_to_destination": stage2
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ==================================================
+# START
+# ==================================================
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
