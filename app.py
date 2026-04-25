@@ -206,6 +206,9 @@ def export_person(x):
         "pickup_address": x["pickup_address"],
         "pickup_lat": x["pickup_lat"],
         "pickup_lng": x["pickup_lng"],
+        "dropoff_address": x["dropoff_address"],
+        "drop_lat": x["drop_lat"],
+        "drop_lng": x["drop_lng"],
         "phone": x["phone"],
         "price": x["price"],
         "notes": x["notes"]
