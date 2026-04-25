@@ -12,7 +12,6 @@ app = Flask(__name__)
 MAX_SEATS = 8
 MAX_STOPS = 7
 
-
 TIMISOARA = {
     "name": "Timisoara",
     "lat": 45.7489,
@@ -35,7 +34,8 @@ def safe_int(val, default=1):
     try:
         if val is None or val == "":
             return default
-        return int(val)
+        v = int(val)
+        return max(1, v)
     except:
         return default
 
@@ -74,7 +74,7 @@ def normalize_input(data):
 
 
 # ==========================================
-# PREPARE BOOKINGS
+# PREPARE
 # ==========================================
 def prepare(bookings):
     cleaned = []
@@ -91,12 +91,11 @@ def prepare(bookings):
             })
             continue
 
-        start_km = haversine(
-            pickup_lat,
-            pickup_lng,
-            TIMISOARA["lat"],
-            TIMISOARA["lng"]
-        )
+        persons = safe_int(b.get("persons"), 1)
+
+        # daca cineva cere >8 locuri, il limitam la 8
+        if persons > MAX_SEATS:
+            persons = MAX_SEATS
 
         drop_lat = safe_float(b.get("drop_lat"))
         drop_lng = safe_float(b.get("drop_lng"))
@@ -116,7 +115,7 @@ def prepare(bookings):
             "dropoff_address": b.get("dropoff_address", ""),
             "drop_lat": drop_lat,
             "drop_lng": drop_lng,
-            "persons": safe_int(b.get("persons"), 1),
+            "persons": persons,
             "phone": b.get("phone", ""),
             "price": b.get("price", ""),
             "notes": b.get("notes", "")
@@ -152,7 +151,6 @@ def build_matrix(bookings):
                 points[j]["lat"],
                 points[j]["lng"]
             )
-
             row.append(int(km * 1000))
 
         matrix.append(row)
@@ -161,7 +159,47 @@ def build_matrix(bookings):
 
 
 # ==========================================
-# SOLVER
+# FALLBACK GROUPER (GARANTAT)
+# ==========================================
+def fallback_group(bookings):
+    # sorteaza dupa distanta fata de Timisoara
+    ordered = sorted(
+        bookings,
+        key=lambda x: haversine(
+            x["pickup_lat"],
+            x["pickup_lng"],
+            TIMISOARA["lat"],
+            TIMISOARA["lng"]
+        ),
+        reverse=True
+    )
+
+    cars = []
+    current = []
+    seats = 0
+
+    for b in ordered:
+        if (
+            seats + b["persons"] <= MAX_SEATS
+            and len(current) < MAX_STOPS
+        ):
+            current.append(b)
+            seats += b["persons"]
+        else:
+            if current:
+                cars.append(current)
+
+            current = [b]
+            seats = b["persons"]
+
+    if current:
+        cars.append(current)
+
+    return cars
+
+
+# ==========================================
+# OR TOOLS SOLVER
 # ==========================================
 def solve(bookings):
     n = len(bookings)
@@ -169,10 +207,12 @@ def solve(bookings):
     if n == 0:
         return []
 
-    vehicles = max(
-        1,
-        math.ceil(sum(x["persons"] for x in bookings) / MAX_SEATS)
-    )
+    total_persons = sum(x["persons"] for x in bookings)
+
+    vehicles = max(1, math.ceil(total_persons / MAX_SEATS))
+
+    # IMPORTANT: daca ai multe bookings, da mai multe masini
+    vehicles = min(vehicles + 3, n)
 
     matrix = build_matrix(bookings)
 
@@ -192,7 +232,7 @@ def solve(bookings):
     transit_idx = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
 
-    # Capacity
+    # CAPACITY
     def demand_callback(from_index):
         node = manager.IndexToNode(from_index)
 
@@ -211,13 +251,12 @@ def solve(bookings):
         "Capacity"
     )
 
-    # Max stops
+    # MAX STOPS
     def stop_callback(from_index):
         node = manager.IndexToNode(from_index)
 
         if node == 0:
             return 0
-
         return 1
 
     stop_idx = routing.RegisterUnaryTransitCallback(stop_callback)
@@ -230,22 +269,26 @@ def solve(bookings):
         "Stops"
     )
 
+    # permite vehicule nefolosite
+    for v in range(vehicles):
+        routing.SetFixedCostOfVehicle(0, v)
+
     search = pywrapcp.DefaultRoutingSearchParameters()
 
     search.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
     )
 
     search.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
 
-    search.time_limit.seconds = 10
+    search.time_limit.seconds = 15
 
     solution = routing.SolveWithParameters(search)
 
     if not solution:
-        return []
+        return fallback_group(bookings)
 
     result = []
 
@@ -263,6 +306,10 @@ def solve(bookings):
 
         if route:
             result.append(route)
+
+    # daca solver a returnat gol => fallback
+    if not result:
+        return fallback_group(bookings)
 
     return result
 
@@ -294,7 +341,7 @@ def export_person(x):
 def home():
     return jsonify({
         "status": "online",
-        "message": "OR Tools Romania Optimizer"
+        "message": "Optimizer Running"
     })
 
 
@@ -304,11 +351,10 @@ def optimize():
         if request.method == "GET":
             return jsonify({
                 "status": "online",
-                "message": "Use POST with bookings JSON"
+                "message": "Use POST with JSON"
             })
 
         raw = request.get_json(silent=True)
-
         bookings = normalize_input(raw)
 
         if not bookings:
@@ -322,8 +368,7 @@ def optimize():
         if not prepared:
             return jsonify({
                 "status": "error",
-                "message": "No valid bookings",
-                "skipped": skipped
+                "message": "No valid bookings"
             }), 400
 
         routes = solve(prepared)
