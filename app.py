@@ -10,6 +10,7 @@ app = Flask(__name__)
 # CONFIG
 # ==========================================
 MAX_SEATS = 8
+
 TIMISOARA = {
     "name": "Timisoara",
     "lat": 45.7489,
@@ -17,10 +18,11 @@ TIMISOARA = {
 }
 
 # ==========================================
-# DISTANCE
+# HAVERSINE DISTANCE
 # ==========================================
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
+
     dLat = math.radians(lat2 - lat1)
     dLon = math.radians(lon2 - lon1)
 
@@ -36,11 +38,48 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 # ==========================================
-# BUILD MATRIX
-# node 0 = Timisoara depot
-# nodes 1..n = passengers
+# INPUT NORMALIZER
+# supports:
+# [....]
+# {"bookings":[...]}
 # ==========================================
-def create_distance_matrix(bookings):
+def normalize_input(data):
+    if isinstance(data, dict) and "bookings" in data:
+        return data["bookings"]
+
+    if isinstance(data, list):
+        return data
+
+    return []
+
+
+# ==========================================
+# CLEAN INPUT
+# ==========================================
+def prepare(bookings):
+    cleaned = []
+
+    for b in bookings:
+        cleaned.append({
+            "id": b.get("id"),
+            "name": b.get("name", ""),
+            "pickup_address": b.get("pickup_address", ""),
+            "pickup_lat": float(b["pickup_lat"]),
+            "pickup_lng": float(b["pickup_lng"]),
+            "persons": int(b.get("persons", 1)),
+            "phone": b.get("phone", ""),
+            "price": b.get("price", ""),
+            "notes": b.get("notes", "")
+        })
+
+    return cleaned
+
+
+# ==========================================
+# MATRIX
+# node 0 = Timisoara
+# ==========================================
+def build_matrix(bookings):
     points = [{
         "lat": TIMISOARA["lat"],
         "lng": TIMISOARA["lng"]
@@ -56,12 +95,15 @@ def create_distance_matrix(bookings):
 
     for i in range(len(points)):
         row = []
+
         for j in range(len(points)):
-            d = haversine(
+            km = haversine(
                 points[i]["lat"], points[i]["lng"],
                 points[j]["lat"], points[j]["lng"]
             )
-            row.append(int(d * 1000))
+
+            row.append(int(km * 1000))
+
         matrix.append(row)
 
     return matrix
@@ -70,51 +112,65 @@ def create_distance_matrix(bookings):
 # ==========================================
 # SOLVER
 # ==========================================
-def solve_routes(bookings):
+def solve(bookings):
     n = len(bookings)
-    vehicles = math.ceil(n / MAX_SEATS)
 
-    distance_matrix = create_distance_matrix(bookings)
+    vehicles = max(1, math.ceil(
+        sum(x["persons"] for x in bookings) / MAX_SEATS
+    ))
+
+    matrix = build_matrix(bookings)
 
     manager = pywrapcp.RoutingIndexManager(
-        len(distance_matrix),
+        len(matrix),
         vehicles,
         0
     )
 
     routing = pywrapcp.RoutingModel(manager)
 
+    # Distance callback
     def distance_callback(from_index, to_index):
         f = manager.IndexToNode(from_index)
         t = manager.IndexToNode(to_index)
-        return distance_matrix[f][t]
+        return matrix[f][t]
 
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+    transit_idx = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
 
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-    # Capacity
+    # Capacity callback
     def demand_callback(from_index):
         node = manager.IndexToNode(from_index)
-        return 0 if node == 0 else 1
 
-    demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+        if node == 0:
+            return 0
+
+        return bookings[node - 1]["persons"]
+
+    demand_idx = routing.RegisterUnaryTransitCallback(demand_callback)
 
     routing.AddDimensionWithVehicleCapacity(
-        demand_callback_index,
+        demand_idx,
         0,
         [MAX_SEATS] * vehicles,
         True,
         "Capacity"
     )
 
-    # Search params
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    search_parameters.first_solution_strategy = (
+    # Params
+    search = pywrapcp.DefaultRoutingSearchParameters()
+
+    search.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     )
 
-    solution = routing.SolveWithParameters(search_parameters)
+    search.local_search_metaheuristic = (
+        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    )
+
+    search.time_limit.seconds = 10
+
+    solution = routing.SolveWithParameters(search)
 
     if not solution:
         return []
@@ -140,47 +196,68 @@ def solve_routes(bookings):
 
 
 # ==========================================
-# API
+# EXPORT
+# ==========================================
+def export_person(x):
+    return {
+        "id": x["id"],
+        "name": x["name"],
+        "persons": x["persons"],
+        "pickup_address": x["pickup_address"],
+        "pickup_lat": x["pickup_lat"],
+        "pickup_lng": x["pickup_lng"],
+        "phone": x["phone"],
+        "price": x["price"],
+        "notes": x["notes"]
+    }
+
+
+# ==========================================
+# ROUTES
 # ==========================================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "status": "online",
-        "message": "Romania Transport Optimizer PRO"
+        "message": "OR Tools Romania Optimizer"
     })
 
 
-@app.route("/optimize", methods=["POST", "GET"])
+@app.route("/optimize", methods=["GET", "POST"])
 def optimize():
     try:
         if request.method == "GET":
             return jsonify({
                 "status": "online",
-                "message": "Use POST JSON list"
+                "message": "Use POST with bookings JSON"
             })
 
-        data = request.get_json()
+        raw = request.get_json()
+        bookings = normalize_input(raw)
 
-        if not isinstance(data, list):
+        if not bookings:
             return jsonify({
-                "error": "Send JSON array"
+                "status": "error",
+                "message": "No bookings found"
             }), 400
 
-        routes = solve_routes(data)
+        prepared = prepare(bookings)
+
+        routes = solve(prepared)
 
         cars = []
 
         for i, route in enumerate(routes, start=1):
             cars.append({
                 "car_number": i,
-                "seats_used": len(route),
+                "seats_used": sum(x["persons"] for x in route),
                 "destination": "Timisoara",
-                "route": route
+                "route": [export_person(x) for x in route]
             })
 
         return jsonify({
             "status": "success",
-            "total_bookings": len(data),
+            "total_bookings": len(prepared),
             "total_cars": len(cars),
             "cars": cars
         })
