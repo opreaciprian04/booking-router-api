@@ -74,17 +74,18 @@ def get_bookings_for_today():
         DATABASE_URL,
         sslmode="require"
     )
+
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    today = datetime.now().date()
+    today = datetime.now().date().isoformat()
 
     cur.execute("""
         SELECT id, name, phone, pickup_address,
-               pickup_lat, pickup_lng, date
+               pickup_lat, pickup_lng, "date"
         FROM bookings
-        WHERE date = %s
-        AND pickup_lat IS NOT NULL
-        AND pickup_lng IS NOT NULL
+        WHERE "date" = %s
+          AND pickup_lat IS NOT NULL
+          AND pickup_lng IS NOT NULL
         ORDER BY id ASC
     """, (today,))
 
