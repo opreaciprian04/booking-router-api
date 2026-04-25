@@ -1,7 +1,6 @@
 from flask import Flask, jsonify, request
 import os
 import math
-from datetime import date, timedelta
 
 app = Flask(__name__)
 
@@ -12,7 +11,6 @@ TIMISOARA = {
     "lat": 45.7489,
     "lng": 21.2087
 }
-
 
 # ==========================================
 # HELPERS
@@ -29,8 +27,12 @@ def haversine(lat1, lon1, lat2, lon2):
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
 
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * \
-        math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
 
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
@@ -42,9 +44,12 @@ def bearing(lat1, lon1, lat2, lon2):
     lon2 = float(lon2)
 
     y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
-    x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - \
-        math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
-        math.cos(math.radians(lon2 - lon1))
+    x = (
+        math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
+        - math.sin(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.cos(math.radians(lon2 - lon1))
+    )
 
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
@@ -60,16 +65,23 @@ def zone_from_bearing(b):
 
 
 # ==========================================
-# INPUT JSON (replaces database)
+# INPUT JSON
+# Grupează TOT ce primește în input
+# Nu contează data
 # ==========================================
 
 def get_bookings_from_request():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
 
-    if not data:
-        return []
+    # dacă vine direct listă
+    if isinstance(data, list):
+        return data
 
-    return data.get("bookings", [])
+    # dacă vine {"bookings":[...]}
+    if isinstance(data, dict):
+        return data.get("bookings", [])
+
+    return []
 
 
 # ==========================================
@@ -158,23 +170,16 @@ def home():
     })
 
 
-
-from flask import Flask, jsonify, request
-
-app = Flask(__name__)
-
 @app.route("/optimize", methods=["GET", "POST"])
 def optimize():
     try:
-        data = request.get_json(silent=True) or {}
-
-        # aici logica ta existentă
         rows = get_bookings_from_request()
         trips = build_groups(rows)
 
         return jsonify({
             "status": "success",
-            "received": data,
+            "total_received": len(rows),
+            "trips_count": len(trips),
             "trips": trips
         })
 
@@ -183,6 +188,7 @@ def optimize():
             "status": "error",
             "message": str(e)
         }), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
