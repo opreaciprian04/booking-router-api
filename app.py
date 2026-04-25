@@ -405,7 +405,7 @@ def optimize():
         for route in valid_routes:
             seats = sum(x["persons"] for x in route)
 
-            if seats >= 3:
+            if seats >= 5:
                 cars.append({
                     "car_number": idx,
                     "seats_used": seats,
