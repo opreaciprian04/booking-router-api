@@ -140,6 +140,31 @@ def optimize():
         "trips": result
     })
 
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+
+@app.route("/optimize", methods=["GET", "POST"])
+def optimize():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        # aici logica ta existentă
+        rows = get_bookings_for_today()
+        trips = build_groups(rows)
+
+        return jsonify({
+            "status": "success",
+            "received": data,
+            "trips": trips
+        })
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
 
 # ==========================================
 # RUN
