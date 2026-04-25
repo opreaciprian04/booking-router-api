@@ -149,22 +149,7 @@ def optimize():
     try:
         data = request.get_json(silent=True) or {}
 
-        # aici logica ta existentă
-        
-      
-
-        return jsonify({
-            "status": "success",
-            "received": data,
-            "trips": trips
-        })
-
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
+       
 
 # ==========================================
 # RUN
