@@ -150,7 +150,7 @@ def optimize():
         data = request.get_json(silent=True) or {}
 
         # aici logica ta existentă
-        rows = get_bookings_for_today()
+        
         trips = build_groups(rows)
 
         return jsonify({
