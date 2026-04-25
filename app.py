@@ -140,19 +140,10 @@ def optimize():
         "trips": result
     })
 
-from flask import Flask, jsonify, request
-
-app = Flask(__name__)
-
-@app.route("/optimize", methods=["GET", "POST"])
-def optimize():
-    try:
-        data = request.get_json(silent=True) or {},
-
-       
-
 # ==========================================
 # RUN
 # ==========================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
