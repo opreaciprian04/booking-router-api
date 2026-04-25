@@ -18,6 +18,26 @@ TIMISOARA = {
 }
 
 # ==========================================
+# SAFE CONVERTERS
+# ==========================================
+def safe_float(val):
+    try:
+        if val is None or val == "":
+            return None
+        return float(val)
+    except:
+        return None
+
+def safe_int(val, default=1):
+    try:
+        if val is None or val == "":
+            return default
+        return int(val)
+    except:
+        return default
+
+
+# ==========================================
 # HAVERSINE DISTANCE
 # ==========================================
 def haversine(lat1, lon1, lat2, lon2):
@@ -39,9 +59,6 @@ def haversine(lat1, lon1, lat2, lon2):
 
 # ==========================================
 # INPUT NORMALIZER
-# supports:
-# [....]
-# {"bookings":[...]}
 # ==========================================
 def normalize_input(data):
     if isinstance(data, dict) and "bookings" in data:
@@ -54,33 +71,54 @@ def normalize_input(data):
 
 
 # ==========================================
-# CLEAN INPUT
+# CLEAN INPUT + IGNORE INVALID ROWS
 # ==========================================
 def prepare(bookings):
     cleaned = []
+    skipped = []
 
     for b in bookings:
+        pickup_lat = safe_float(b.get("pickup_lat"))
+        pickup_lng = safe_float(b.get("pickup_lng"))
+
+        # daca lipseste pickup => skip
+        if pickup_lat is None or pickup_lng is None:
+            skipped.append({
+                "id": b.get("id"),
+                "reason": "missing pickup coordinates"
+            })
+            continue
+
+        # drop optional
+        drop_lat = safe_float(b.get("drop_lat"))
+        drop_lng = safe_float(b.get("drop_lng"))
+
+        if drop_lat is None:
+            drop_lat = TIMISOARA["lat"]
+
+        if drop_lng is None:
+            drop_lng = TIMISOARA["lng"]
+
         cleaned.append({
             "id": b.get("id"),
             "name": b.get("name", ""),
             "pickup_address": b.get("pickup_address", ""),
-            "pickup_lat": float(b["pickup_lat"]),
-            "pickup_lng": float(b["pickup_lng"]),
-            "dropoff_address": b.get("dropoff_address",""),
-            "drop_lat": float(b["drop_lat"]),
-            "drop_lng": float(b["drop_lng"]),
-            "persons": int(b.get("persons", 1)),
+            "pickup_lat": pickup_lat,
+            "pickup_lng": pickup_lng,
+            "dropoff_address": b.get("dropoff_address", ""),
+            "drop_lat": drop_lat,
+            "drop_lng": drop_lng,
+            "persons": safe_int(b.get("persons"), 1),
             "phone": b.get("phone", ""),
             "price": b.get("price", ""),
             "notes": b.get("notes", "")
         })
 
-    return cleaned
+    return cleaned, skipped
 
 
 # ==========================================
 # MATRIX
-# node 0 = Timisoara
 # ==========================================
 def build_matrix(bookings):
     points = [{
@@ -118,9 +156,13 @@ def build_matrix(bookings):
 def solve(bookings):
     n = len(bookings)
 
-    vehicles = max(1, math.ceil(
-        sum(x["persons"] for x in bookings) / MAX_SEATS
-    ))
+    if n == 0:
+        return []
+
+    vehicles = max(
+        1,
+        math.ceil(sum(x["persons"] for x in bookings) / MAX_SEATS)
+    )
 
     matrix = build_matrix(bookings)
 
@@ -132,7 +174,6 @@ def solve(bookings):
 
     routing = pywrapcp.RoutingModel(manager)
 
-    # Distance callback
     def distance_callback(from_index, to_index):
         f = manager.IndexToNode(from_index)
         t = manager.IndexToNode(to_index)
@@ -141,7 +182,6 @@ def solve(bookings):
     transit_idx = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
 
-    # Capacity callback
     def demand_callback(from_index):
         node = manager.IndexToNode(from_index)
 
@@ -160,7 +200,6 @@ def solve(bookings):
         "Capacity"
     )
 
-    # Params
     search = pywrapcp.DefaultRoutingSearchParameters()
 
     search.first_solution_strategy = (
@@ -238,7 +277,8 @@ def optimize():
                 "message": "Use POST with bookings JSON"
             })
 
-        raw = request.get_json()
+        raw = request.get_json(silent=True)
+
         bookings = normalize_input(raw)
 
         if not bookings:
@@ -247,7 +287,14 @@ def optimize():
                 "message": "No bookings found"
             }), 400
 
-        prepared = prepare(bookings)
+        prepared, skipped = prepare(bookings)
+
+        if not prepared:
+            return jsonify({
+                "status": "error",
+                "message": "No valid bookings with coordinates",
+                "skipped": skipped
+            }), 400
 
         routes = solve(prepared)
 
@@ -262,7 +309,10 @@ def optimize():
 
         return jsonify({
             "status": "success",
-            "total_bookings": len(prepared),
+            "total_received": len(bookings),
+            "valid_bookings": len(prepared),
+            "skipped_bookings": len(skipped),
+            "skipped_details": skipped,
             "total_cars": len(cars),
             "cars": cars
         })
