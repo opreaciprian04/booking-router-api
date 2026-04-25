@@ -11,7 +11,7 @@ app = Flask(__name__)
 # ==========================================
 MAX_SEATS = 8
 MAX_STOPS = 7
-MIN_START_DISTANCE_KM = 30
+MIN_START_DISTANCE_KM = 15
 
 TIMISOARA = {
     "name": "Timisoara",
