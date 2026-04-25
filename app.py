@@ -11,7 +11,7 @@ app = Flask(__name__)
 # ==========================================
 MAX_SEATS = 8
 MAX_STOPS = 7
-MIN_START_DISTANCE_KM = 15
+
 
 TIMISOARA = {
     "name": "Timisoara",
@@ -97,9 +97,6 @@ def prepare(bookings):
             TIMISOARA["lat"],
             TIMISOARA["lng"]
         )
-
-        
-            continue
 
         drop_lat = safe_float(b.get("drop_lat"))
         drop_lng = safe_float(b.get("drop_lng"))
