@@ -13,7 +13,6 @@ MAX_SEATS = 8
 MAX_STOPS = 7
 MIN_START_DISTANCE_KM = 300
 
-
 TIMISOARA = {
     "name": "Timisoara",
     "lat": 45.7489,
@@ -31,6 +30,7 @@ def safe_float(val):
     except:
         return None
 
+
 def safe_int(val, default=1):
     try:
         if val is None or val == "":
@@ -41,19 +41,19 @@ def safe_int(val, default=1):
 
 
 # ==========================================
-# HAVERSINE DISTANCE
+# DISTANCE
 # ==========================================
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
 
-    dLat = math.radians(lat2 - lat1)
-    dLon = math.radians(lon2 - lon1)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
 
     a = (
-        math.sin(dLat / 2) ** 2 +
-        math.cos(math.radians(lat1)) *
-        math.cos(math.radians(lat2)) *
-        math.sin(dLon / 2) ** 2
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
     )
 
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
@@ -61,7 +61,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 # ==========================================
-# INPUT NORMALIZER
+# INPUT
 # ==========================================
 def normalize_input(data):
     if isinstance(data, dict) and "bookings" in data:
@@ -74,7 +74,7 @@ def normalize_input(data):
 
 
 # ==========================================
-# CLEAN INPUT + IGNORE INVALID ROWS
+# PREPARE BOOKINGS
 # ==========================================
 def prepare(bookings):
     cleaned = []
@@ -91,8 +91,6 @@ def prepare(bookings):
             })
             continue
 
-        # conditie noua:
-        # minim 300 km pana la Timisoara
         start_km = haversine(
             pickup_lat,
             pickup_lng,
@@ -156,8 +154,10 @@ def build_matrix(bookings):
 
         for j in range(len(points)):
             km = haversine(
-                points[i]["lat"], points[i]["lng"],
-                points[j]["lat"], points[j]["lng"]
+                points[i]["lat"],
+                points[i]["lng"],
+                points[j]["lat"],
+                points[j]["lng"]
             )
 
             row.append(int(km * 1000))
@@ -199,6 +199,7 @@ def solve(bookings):
     transit_idx = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
 
+    # Capacity
     def demand_callback(from_index):
         node = manager.IndexToNode(from_index)
 
@@ -209,7 +210,6 @@ def solve(bookings):
 
     demand_idx = routing.RegisterUnaryTransitCallback(demand_callback)
 
-   # Capacity
     routing.AddDimensionWithVehicleCapacity(
         demand_idx,
         0,
@@ -218,25 +218,8 @@ def solve(bookings):
         "Capacity"
     )
 
-    # Stops max 7
+    # Max stops
     def stop_callback(from_index):
-        node = manager.IndexToNode(from_index)
-
-        if node == 0:
-            return 0
-
-        return 1
-
-    stop_idx = routing.RegisterUnaryTransitCallback(stop_callback)
-
-    routing.AddDimensionWithVehicleCapacity(
-        stop_idx,
-        0,
-        [MAX_STOPS] * vehicles,
-        True,
-        "Stops"
-    )
-     def stop_callback(from_index):
         node = manager.IndexToNode(from_index)
 
         if node == 0:
@@ -346,7 +329,7 @@ def optimize():
         if not prepared:
             return jsonify({
                 "status": "error",
-                "message": "No valid bookings with coordinates",
+                "message": "No valid bookings",
                 "skipped": skipped
             }), 400
 
@@ -355,12 +338,12 @@ def optimize():
         cars = []
 
         for i, route in enumerate(routes, start=1):
-    cars.append({
-        "car_number": i,
-        "seats_used": sum(x["persons"] for x in route),
-        "total_stops": len(route),
-        "route": [export_person(x) for x in route]
-    })
+            cars.append({
+                "car_number": i,
+                "seats_used": sum(x["persons"] for x in route),
+                "total_stops": len(route),
+                "route": [export_person(x) for x in route]
+            })
 
         return jsonify({
             "status": "success",
