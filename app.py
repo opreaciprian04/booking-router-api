@@ -158,26 +158,23 @@ def home():
     })
 
 
-@app.route("/optimize", methods=["POST"])
+
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+
+@app.route("/optimize", methods=["GET", "POST"])
 def optimize():
-
     try:
-        rows = get_bookings_from_request()
+        data = request.get_json(silent=True) or {}
 
-        if not rows:
-            return jsonify({
-                "status": "error",
-                "message": "No bookings received"
-            }), 400
-
+        # aici logica ta existentă
+        rows = get_bookings_for_today()
         trips = build_groups(rows)
 
         return jsonify({
             "status": "success",
-            "generated_at": str(date.today()),
-            "for_date": str(date.today() + timedelta(days=1)),
-            "total_bookings": len(rows),
-            "total_trips": len(trips),
+            "received": data,
             "trips": trips
         })
 
@@ -186,7 +183,6 @@ def optimize():
             "status": "error",
             "message": str(e)
         }), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
