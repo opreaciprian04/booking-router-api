@@ -158,7 +158,7 @@ def build_groups(rows):
 @app.route("/optimize", methods=["GET"])
 def optimize():
     try:
-        rows = get_bookings_for_today()
+        rows = get_bookings_for_tomorrow()
         trips = build_groups(rows)
 
         return jsonify({
@@ -274,7 +274,7 @@ def build_dropoff_groups(rows):
 @app.route("/optimize_dropoffs", methods=["GET"])
 def optimize_dropoffs():
     try:
-        rows = get_bookings_for_today()
+        rows = get_bookings_for_tomorrow()
 
         trips = build_dropoff_groups(rows)
 
