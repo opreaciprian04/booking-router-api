@@ -10,6 +10,9 @@ app = Flask(__name__)
 # CONFIG
 # ==========================================
 MAX_SEATS = 8
+MAX_STOPS = 7
+MIN_START_DISTANCE_KM = 300
+
 
 TIMISOARA = {
     "name": "Timisoara",
@@ -81,7 +84,6 @@ def prepare(bookings):
         pickup_lat = safe_float(b.get("pickup_lat"))
         pickup_lng = safe_float(b.get("pickup_lng"))
 
-        # daca lipseste pickup => skip
         if pickup_lat is None or pickup_lng is None:
             skipped.append({
                 "id": b.get("id"),
@@ -89,7 +91,22 @@ def prepare(bookings):
             })
             continue
 
-        # drop optional
+        # conditie noua:
+        # minim 300 km pana la Timisoara
+        start_km = haversine(
+            pickup_lat,
+            pickup_lng,
+            TIMISOARA["lat"],
+            TIMISOARA["lng"]
+        )
+
+        if start_km < MIN_START_DISTANCE_KM:
+            skipped.append({
+                "id": b.get("id"),
+                "reason": f"pickup under {MIN_START_DISTANCE_KM} km from Timisoara"
+            })
+            continue
+
         drop_lat = safe_float(b.get("drop_lat"))
         drop_lng = safe_float(b.get("drop_lng"))
 
@@ -199,6 +216,23 @@ def solve(bookings):
         True,
         "Capacity"
     )
+     def stop_callback(from_index):
+        node = manager.IndexToNode(from_index)
+
+        if node == 0:
+            return 0
+
+        return 1
+
+    stop_idx = routing.RegisterUnaryTransitCallback(stop_callback)
+
+    routing.AddDimensionWithVehicleCapacity(
+        stop_idx,
+        0,
+        [MAX_STOPS] * vehicles,
+        True,
+        "Stops"
+    )
 
     search = pywrapcp.DefaultRoutingSearchParameters()
 
@@ -301,11 +335,12 @@ def optimize():
         cars = []
 
         for i, route in enumerate(routes, start=1):
-            cars.append({
-                "car_number": i,
-                "seats_used": sum(x["persons"] for x in route),
-                "route": [export_person(x) for x in route]
-            })
+    cars.append({
+        "car_number": i,
+        "seats_used": sum(x["persons"] for x in route),
+        "total_stops": len(route),
+        "route": [export_person(x) for x in route]
+    })
 
         return jsonify({
             "status": "success",
