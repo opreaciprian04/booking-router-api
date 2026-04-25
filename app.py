@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 import math
+import os
 
 app = Flask(__name__)
 
@@ -15,17 +16,10 @@ TIMISOARA = {
 }
 
 # ==========================================
-# SAMPLE INPUT
-# Primește JSON listă rezervări
-# fiecare rezervare trebuie să aibă:
-# id, name, pickup_lat, pickup_lng
-# ==========================================
-
-# ==========================================
 # DISTANCE FUNCTION
 # ==========================================
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # km
+    R = 6371
 
     dLat = math.radians(lat2 - lat1)
     dLon = math.radians(lon2 - lon1)
@@ -60,13 +54,11 @@ def pair_score(a, b):
         TIMISOARA["lat"], TIMISOARA["lng"]
     )
 
-    # vrem apropiere între pasageri
-    # și distanță similară până la Timișoara
     return dist_between + abs(dist_a_tm - dist_b_tm)
 
 
 # ==========================================
-# GROUPING
+# GROUPING ALGORITHM
 # ==========================================
 def optimize_groups(bookings):
     unassigned = bookings[:]
@@ -77,7 +69,10 @@ def optimize_groups(bookings):
         car = [seed]
 
         while len(car) < MAX_SEATS and unassigned:
-            best = min(unassigned, key=lambda x: sum(pair_score(x, c) for c in car))
+            best = min(
+                unassigned,
+                key=lambda x: sum(pair_score(x, c) for c in car)
+            )
             car.append(best)
             unassigned.remove(best)
 
@@ -87,42 +82,87 @@ def optimize_groups(bookings):
 
 
 # ==========================================
-# SORT PICKUP ORDER
-# De la cel mai departe -> spre Timișoara
+# PICKUP ORDER
+# de la cel mai departe -> Timisoara
 # ==========================================
 def route_order(group):
     return sorted(
         group,
         key=lambda x: haversine(
-            x["pickup_lat"], x["pickup_lng"],
-            TIMISOARA["lat"], TIMISOARA["lng"]
+            x["pickup_lat"],
+            x["pickup_lng"],
+            TIMISOARA["lat"],
+            TIMISOARA["lng"]
         ),
         reverse=True
     )
 
 
 # ==========================================
+# HOME
+# ==========================================
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "status": "online",
+        "message": "Optimization API running"
+    })
+
+
+# ==========================================
 # API ROUTE
 # POST /optimize
 # ==========================================
-from flask import Flask, request, jsonify
-
-app = Flask(__name__)
-
 @app.route("/optimize", methods=["GET", "POST"])
 def optimize():
     try:
-        data = request.get_json(force=True, silent=True)
+        if request.method == "GET":
+            return jsonify({
+                "status": "online",
+                "message": "Use POST with JSON bookings list"
+            })
+
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON received"
+            }), 400
+
+        trips = optimize_groups(data)
+
+        result = []
+
+        for i, trip in enumerate(trips, start=1):
+            ordered = route_order(trip)
+
+            result.append({
+                "car_number": i,
+                "seats_used": len(ordered),
+                "route": ordered,
+                "destination": TIMISOARA["name"]
+            })
 
         return jsonify({
-            "status": "ok",
-            "method": request.method,
-            "received": data
+            "status": "success",
+            "total_bookings": len(data),
+            "total_cars": len(result),
+            "cars": result
         })
 
     except Exception as e:
         return jsonify({
-            "error": str(e)
+            "status": "error",
+            "message": str(e)
         }), 500
 
-app.run(host="0.0.0.0", port=5000)
+
+# ==========================================
+# RUN
+# ==========================================
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000))
+    )
