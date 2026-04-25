@@ -147,7 +147,7 @@ app = Flask(__name__)
 @app.route("/optimize", methods=["GET", "POST"])
 def optimize():
     try:
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True) or {},
 
        
 
