@@ -70,7 +70,8 @@ def zone_from_bearing(b):
 # ==========================================
 
 def get_bookings_for_today():
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg2.connect(DATABASE_URL),
+    sslmode="require")
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     today = datetime.now().date()
