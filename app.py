@@ -257,7 +257,6 @@ def optimize():
             cars.append({
                 "car_number": i,
                 "seats_used": sum(x["persons"] for x in route),
-                "destination": "dropoff_adress",
                 "route": [export_person(x) for x in route]
             })
 
