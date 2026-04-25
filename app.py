@@ -6,39 +6,46 @@ from ortools.constraint_solver import pywrapcp
 
 app = Flask(__name__)
 
-# ==================================================
+# ==========================================
 # CONFIG
-# ==================================================
+# ==========================================
 MAX_SEATS = 8
+MAX_STOPS = 7
+
 TIMISOARA = {
     "name": "Timisoara",
     "lat": 45.7489,
     "lng": 21.2087
 }
 
-# ==================================================
-# HELPERS
-# ==================================================
-def safe_float(v):
+# ==========================================
+# SAFE CONVERTERS
+# ==========================================
+def safe_float(val):
     try:
-        if v is None or v == "":
+        if val is None or val == "":
             return None
-        return float(v)
+        return float(val)
     except:
         return None
 
 
-def safe_int(v, default=1):
+def safe_int(val, default=1):
     try:
-        if v is None or v == "":
+        if val is None or val == "":
             return default
-        return max(1, int(v))
+        v = int(val)
+        return max(1, v)
     except:
         return default
 
 
+# ==========================================
+# DISTANCE
+# ==========================================
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
+
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
 
@@ -53,17 +60,22 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 
+# ==========================================
+# INPUT
+# ==========================================
 def normalize_input(data):
     if isinstance(data, dict) and "bookings" in data:
         return data["bookings"]
+
     if isinstance(data, list):
         return data
+
     return []
 
 
-# ==================================================
-# PREPARE BOOKINGS
-# ==================================================
+# ==========================================
+# PREPARE
+# ==========================================
 def prepare(bookings):
     cleaned = []
     skipped = []
@@ -71,37 +83,39 @@ def prepare(bookings):
     for b in bookings:
         pickup_lat = safe_float(b.get("pickup_lat"))
         pickup_lng = safe_float(b.get("pickup_lng"))
-        drop_lat = safe_float(b.get("drop_lat"))
-        drop_lng = safe_float(b.get("drop_lng"))
 
         if pickup_lat is None or pickup_lng is None:
             skipped.append({
                 "id": b.get("id"),
-                "reason": "missing pickup coords"
-            })
-            continue
-
-        if drop_lat is None or drop_lng is None:
-            skipped.append({
-                "id": b.get("id"),
-                "reason": "missing dropoff coords"
+                "reason": "missing pickup coordinates"
             })
             continue
 
         persons = safe_int(b.get("persons"), 1)
+
+        # daca cineva cere >8 locuri, il limitam la 8
         if persons > MAX_SEATS:
             persons = MAX_SEATS
+
+        drop_lat = safe_float(b.get("drop_lat"))
+        drop_lng = safe_float(b.get("drop_lng"))
+
+        if drop_lat is None:
+            drop_lat = TIMISOARA["lat"]
+
+        if drop_lng is None:
+            drop_lng = TIMISOARA["lng"]
 
         cleaned.append({
             "id": b.get("id"),
             "name": b.get("name", ""),
-            "persons": persons,
             "pickup_address": b.get("pickup_address", ""),
             "pickup_lat": pickup_lat,
             "pickup_lng": pickup_lng,
             "dropoff_address": b.get("dropoff_address", ""),
             "drop_lat": drop_lat,
             "drop_lng": drop_lng,
+            "persons": persons,
             "phone": b.get("phone", ""),
             "price": b.get("price", ""),
             "notes": b.get("notes", "")
@@ -110,53 +124,104 @@ def prepare(bookings):
     return cleaned, skipped
 
 
-# ==================================================
-# GENERIC ORTOOLS SOLVER
-# ==================================================
-def solve_routes(bookings, start_mode="pickup"):
-    """
-    start_mode:
-    pickup  = optimize pickup -> Timisoara
-    dropoff = optimize Timisoara -> dropoff
-    """
-
-    if not bookings:
-        return []
-
-    total_persons = sum(x["persons"] for x in bookings)
-    vehicles = max(1, math.ceil(total_persons / MAX_SEATS))
-
-    # Nodes
+# ==========================================
+# MATRIX
+# ==========================================
+def build_matrix(bookings):
     points = [{
         "lat": TIMISOARA["lat"],
         "lng": TIMISOARA["lng"]
     }]
 
     for b in bookings:
-        if start_mode == "pickup":
-            points.append({
-                "lat": b["pickup_lat"],
-                "lng": b["pickup_lng"]
-            })
-        else:
-            points.append({
-                "lat": b["drop_lat"],
-                "lng": b["drop_lng"]
-            })
+        points.append({
+            "lat": b["pickup_lat"],
+            "lng": b["pickup_lng"]
+        })
 
-    # Matrix
     matrix = []
+
     for i in range(len(points)):
         row = []
+
         for j in range(len(points)):
             km = haversine(
-                points[i]["lat"], points[i]["lng"],
-                points[j]["lat"], points[j]["lng"]
+                points[i]["lat"],
+                points[i]["lng"],
+                points[j]["lat"],
+                points[j]["lng"]
             )
             row.append(int(km * 1000))
+
         matrix.append(row)
 
-    manager = pywrapcp.RoutingIndexManager(len(matrix), vehicles, 0)
+    return matrix
+
+
+# ==========================================
+# FALLBACK GROUPER (GARANTAT)
+# ==========================================
+def fallback_group(bookings):
+    # sorteaza dupa distanta fata de Timisoara
+    ordered = sorted(
+        bookings,
+        key=lambda x: haversine(
+            x["pickup_lat"],
+            x["pickup_lng"],
+            TIMISOARA["lat"],
+            TIMISOARA["lng"]
+        ),
+        reverse=True
+    )
+
+    cars = []
+    current = []
+    seats = 0
+
+    for b in ordered:
+        if (
+            seats + b["persons"] <= MAX_SEATS
+            and len(current) < MAX_STOPS
+        ):
+            current.append(b)
+            seats += b["persons"]
+        else:
+            if current:
+                cars.append(current)
+
+            current = [b]
+            seats = b["persons"]
+
+    if current:
+        cars.append(current)
+
+    return cars
+
+
+# ==========================================
+# OR TOOLS SOLVER
+# ==========================================
+def solve(bookings):
+    n = len(bookings)
+
+    if n == 0:
+        return []
+
+    total_persons = sum(x["persons"] for x in bookings)
+
+    vehicles = max(1, math.ceil(total_persons / MAX_SEATS))
+
+    # IMPORTANT: daca ai multe bookings, da mai multe masini
+    vehicles = min(vehicles + 3, n)
+
+    matrix = build_matrix(bookings)
+
+    manager = pywrapcp.RoutingIndexManager(
+        len(matrix),
+        vehicles,
+        0
+    )
+
     routing = pywrapcp.RoutingModel(manager)
 
     def distance_callback(from_index, to_index):
@@ -167,11 +232,13 @@ def solve_routes(bookings, start_mode="pickup"):
     transit_idx = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
 
-    # Capacity
+    # CAPACITY
     def demand_callback(from_index):
         node = manager.IndexToNode(from_index)
+
         if node == 0:
             return 0
+
         return bookings[node - 1]["persons"]
 
     demand_idx = routing.RegisterUnaryTransitCallback(demand_callback)
@@ -184,22 +251,44 @@ def solve_routes(bookings, start_mode="pickup"):
         "Capacity"
     )
 
+    # MAX STOPS
+    def stop_callback(from_index):
+        node = manager.IndexToNode(from_index)
+
+        if node == 0:
+            return 0
+        return 1
+
+    stop_idx = routing.RegisterUnaryTransitCallback(stop_callback)
+
+    routing.AddDimensionWithVehicleCapacity(
+        stop_idx,
+        0,
+        [MAX_STOPS] * vehicles,
+        True,
+        "Stops"
+    )
+
+    # permite vehicule nefolosite
+    for v in range(vehicles):
+        routing.SetFixedCostOfVehicle(0, v)
+
     search = pywrapcp.DefaultRoutingSearchParameters()
 
     search.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
     )
 
     search.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
 
-    search.time_limit.seconds = 10
+    search.time_limit.seconds = 15
 
     solution = routing.SolveWithParameters(search)
 
     if not solution:
-        return []
+        return fallback_group(bookings)
 
     result = []
 
@@ -218,12 +307,16 @@ def solve_routes(bookings, start_mode="pickup"):
         if route:
             result.append(route)
 
+    # daca solver a returnat gol => fallback
+    if not result:
+        return fallback_group(bookings)
+
     return result
 
 
-# ==================================================
+# ==========================================
 # EXPORT
-# ==================================================
+# ==========================================
 def export_person(x):
     return {
         "id": x["id"],
@@ -241,34 +334,27 @@ def export_person(x):
     }
 
 
-def export_routes(routes):
-    cars = []
-
-    for i, route in enumerate(routes, start=1):
-        cars.append({
-            "car_number": i,
-            "seats_used": sum(x["persons"] for x in route),
-            "total_stops": len(route),
-            "route": [export_person(x) for x in route]
-        })
-
-    return cars
-
-
-# ==================================================
+# ==========================================
 # ROUTES
-# ==================================================
+# ==========================================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "status": "online",
-        "message": "2 Step OR-Tools Optimizer"
+        "message": "Optimizer Running"
     })
 
 
-@app.route("/optimize", methods=["POST"])
+@app.route("/optimize", methods=["GET", "POST"])
+@app.route("/optimize", methods=["GET", "POST"])
 def optimize():
     try:
+        if request.method == "GET":
+            return jsonify({
+                "status": "online",
+                "message": "Use POST with JSON"
+            })
+
         raw = request.get_json(silent=True)
         bookings = normalize_input(raw)
 
@@ -286,11 +372,47 @@ def optimize():
                 "message": "No valid bookings"
             }), 400
 
-        # STEP 1 = Pickup -> Timisoara
-        pickup_routes = solve_routes(prepared, "pickup")
+        routes = solve(prepared)
 
-        # STEP 2 = Timisoara -> Dropoff
-        dropoff_routes = solve_routes(prepared, "dropoff")
+        valid_routes = []
+        pending = []
+
+        for route in routes:
+            seats = sum(x["persons"] for x in route)
+
+            if seats >= 3:
+                valid_routes.append(route)
+            else:
+                pending.extend(route)
+
+        for booking in pending:
+            added = False
+
+            for car in valid_routes:
+                used = sum(x["persons"] for x in car)
+
+                if used + booking["persons"] <= MAX_SEATS and len(car) < MAX_STOPS:
+                    car.append(booking)
+                    added = True
+                    break
+
+            if not added:
+                valid_routes.append([booking])
+
+        cars = []
+
+        idx = 1
+        for route in valid_routes:
+            seats = sum(x["persons"] for x in route)
+
+            if seats >= 5:
+                cars.append({
+                    "car_number": idx,
+                    "seats_used": seats,
+                    "total_stops": len(route),
+                    "route": [export_person(x) for x in route]
+                })
+                idx += 1
 
         return jsonify({
             "status": "success",
@@ -298,16 +420,8 @@ def optimize():
             "valid_bookings": len(prepared),
             "skipped_bookings": len(skipped),
             "skipped_details": skipped,
-
-            "phase_1_pickup_to_timisoara": {
-                "total_cars": len(pickup_routes),
-                "cars": export_routes(pickup_routes)
-            },
-
-            "phase_2_timisoara_to_dropoff": {
-                "total_cars": len(dropoff_routes),
-                "cars": export_routes(dropoff_routes)
-            }
+            "total_cars": len(cars),
+            "cars": cars
         })
 
     except Exception as e:
@@ -316,10 +430,9 @@ def optimize():
             "message": str(e)
         }), 500
 
-
-# ==================================================
+# ==========================================
 # RUN
-# ==================================================
+# ==========================================
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
