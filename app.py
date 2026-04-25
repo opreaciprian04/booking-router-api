@@ -16,7 +16,7 @@ TIMISOARA = {
 }
 
 # ==========================================
-# DISTANCE FUNCTION
+# HAVERSINE DISTANCE (km)
 # ==========================================
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -36,66 +36,79 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 # ==========================================
-# SCORE: apropiere între oameni + direcție spre Timișoara
+# ANGLE vs TIMISOARA
+# sweep clustering
 # ==========================================
-def pair_score(a, b):
-    dist_between = haversine(
-        a["pickup_lat"], a["pickup_lng"],
-        b["pickup_lat"], b["pickup_lng"]
+def angle_from_timisoara(lat, lng):
+    dy = lat - TIMISOARA["lat"]
+    dx = lng - TIMISOARA["lng"]
+    return math.atan2(dy, dx)
+
+
+# ==========================================
+# DISTANCE TO TIMISOARA
+# ==========================================
+def dist_to_tm(person):
+    return haversine(
+        person["pickup_lat"],
+        person["pickup_lng"],
+        TIMISOARA["lat"],
+        TIMISOARA["lng"]
     )
 
-    dist_a_tm = haversine(
-        a["pickup_lat"], a["pickup_lng"],
-        TIMISOARA["lat"], TIMISOARA["lng"]
-    )
 
-    dist_b_tm = haversine(
-        b["pickup_lat"], b["pickup_lng"],
-        TIMISOARA["lat"], TIMISOARA["lng"]
-    )
+# ==========================================
+# STEP 1:
+# sort geographically around Timisoara
+# ==========================================
+def cluster_bookings(bookings):
+    enriched = []
 
-    return dist_between + abs(dist_a_tm - dist_b_tm)
+    for b in bookings:
+        item = b.copy()
+        item["_angle"] = angle_from_timisoara(
+            b["pickup_lat"],
+            b["pickup_lng"]
+        )
+        item["_dist"] = dist_to_tm(b)
+        enriched.append(item)
+
+    enriched.sort(key=lambda x: (x["_angle"], -x["_dist"]))
+
+    cars = []
+    current = []
+
+    for item in enriched:
+        current.append(item)
+
+        if len(current) == MAX_SEATS:
+            cars.append(current)
+            current = []
+
+    if current:
+        cars.append(current)
+
+    return cars
 
 
 # ==========================================
-# GROUPING ALGORITHM
+# STEP 2:
+# inside each car sort by farthest first
 # ==========================================
-def optimize_groups(bookings):
-    unassigned = bookings[:]
-    trips = []
-
-    while unassigned:
-        seed = unassigned.pop(0)
-        car = [seed]
-
-        while len(car) < MAX_SEATS and unassigned:
-            best = min(
-                unassigned,
-                key=lambda x: sum(pair_score(x, c) for c in car)
-            )
-            car.append(best)
-            unassigned.remove(best)
-
-        trips.append(car)
-
-    return trips
+def optimize_route(group):
+    return sorted(group, key=lambda x: x["_dist"], reverse=True)
 
 
 # ==========================================
-# PICKUP ORDER
-# de la cel mai departe -> Timisoara
+# CLEAN RESPONSE
 # ==========================================
-def route_order(group):
-    return sorted(
-        group,
-        key=lambda x: haversine(
-            x["pickup_lat"],
-            x["pickup_lng"],
-            TIMISOARA["lat"],
-            TIMISOARA["lng"]
-        ),
-        reverse=True
-    )
+def clean_person(p):
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "pickup_lat": p["pickup_lat"],
+        "pickup_lng": p["pickup_lng"]
+    }
 
 
 # ==========================================
@@ -105,12 +118,12 @@ def route_order(group):
 def home():
     return jsonify({
         "status": "online",
-        "message": "Optimization API running"
+        "message": "Booking Router API V2"
     })
 
 
 # ==========================================
-# API ROUTE
+# MAIN API
 # POST /optimize
 # ==========================================
 @app.route("/optimize", methods=["GET", "POST"])
@@ -119,29 +132,29 @@ def optimize():
         if request.method == "GET":
             return jsonify({
                 "status": "online",
-                "message": "Use POST with JSON bookings list"
+                "message": "Use POST with bookings JSON list"
             })
 
         data = request.get_json()
 
-        if not data:
+        if not data or not isinstance(data, list):
             return jsonify({
                 "status": "error",
-                "message": "No JSON received"
+                "message": "Send JSON array"
             }), 400
 
-        trips = optimize_groups(data)
+        cars_raw = cluster_bookings(data)
 
         result = []
 
-        for i, trip in enumerate(trips, start=1):
-            ordered = route_order(trip)
+        for idx, group in enumerate(cars_raw, start=1):
+            ordered = optimize_route(group)
 
             result.append({
-                "car_number": i,
+                "car_number": idx,
                 "seats_used": len(ordered),
-                "route": ordered,
-                "destination": TIMISOARA["name"]
+                "destination": TIMISOARA["name"],
+                "route": [clean_person(p) for p in ordered]
             })
 
         return jsonify({
