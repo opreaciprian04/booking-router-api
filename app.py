@@ -105,45 +105,24 @@ def route_order(group):
 # API ROUTE
 # POST /optimize
 # ==========================================
-@app.route("/optimize", methods=["GET","POST"])
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+@app.route("/optimize", methods=["GET", "POST"])
 def optimize():
-    data = request.json
+    try:
+        data = request.get_json(force=True, silent=True)
 
-    if not data:
-        return jsonify({"error": "No JSON data"}), 400
-
-    trips = optimize_groups(data)
-
-    result = []
-
-    for i, trip in enumerate(trips, start=1):
-        ordered = route_order(trip)
-
-        result.append({
-            "car_number": i,
-            "seats_used": len(ordered),
-            "pickup_order": [
-                {
-                    "id": p["id"],
-                    "name": p["name"],
-                    "pickup_lat": p["pickup_lat"],
-                    "pickup_lng": p["pickup_lng"]
-                }
-                for p in ordered
-            ],
-            "destination": "Timisoara"
+        return jsonify({
+            "status": "ok",
+            "method": request.method,
+            "received": data
         })
 
-    return jsonify({
-        "status": "success",
-        "total_cars": len(result),
-        "trips": result
-    })
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
 
-# ==========================================
-# RUN
-# ==========================================
-if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+app.run(host="0.0.0.0", port=5000)
