@@ -346,6 +346,7 @@ def home():
 
 
 @app.route("/optimize", methods=["GET", "POST"])
+@app.route("/optimize", methods=["GET", "POST"])
 def optimize():
     try:
         if request.method == "GET":
@@ -371,63 +372,47 @@ def optimize():
                 "message": "No valid bookings"
             }), 400
 
-       # ÎN SCRIPTUL TĂU CRASH-UL ESTE DIN INDENTARE.
-# Ai pus codul nou în afara funcției optimize().
-# Înlocuiește TOT din optimize() după linia:
-
-routes = solve(prepared)
-
-# cu blocul de mai jos (corect indentat):
-
         routes = solve(prepared)
 
-        # ==========================
-        # minim 3 persoane / masina
-        # ==========================
         valid_routes = []
         pending = []
 
         for route in routes:
-            seats_used = sum(x["persons"] for x in route)
+            seats = sum(x["persons"] for x in route)
 
-            if seats_used >= 3:
+            if seats >= 3:
                 valid_routes.append(route)
             else:
                 pending.extend(route)
 
-        # încearcă să redistribui persoanele rămase
         for booking in pending:
-            placed = False
+            added = False
 
             for car in valid_routes:
                 used = sum(x["persons"] for x in car)
 
-                if (
-                    used + booking["persons"] <= MAX_SEATS
-                    and len(car) < MAX_STOPS
-                ):
+                if used + booking["persons"] <= MAX_SEATS and len(car) < MAX_STOPS:
                     car.append(booking)
-                    placed = True
+                    added = True
                     break
 
-            # dacă nu există nicio mașină validă încă
-            if not placed:
+            if not added:
                 valid_routes.append([booking])
 
-        # construiește output final
         cars = []
 
-        for i, route in enumerate(valid_routes, start=1):
-            seats_used = sum(x["persons"] for x in route)
+        idx = 1
+        for route in valid_routes:
+            seats = sum(x["persons"] for x in route)
 
-            # condiția finală minim 3 persoane
-            if seats_used >= 3:
+            if seats >= 3:
                 cars.append({
-                    "car_number": i,
-                    "seats_used": seats_used,
+                    "car_number": idx,
+                    "seats_used": seats,
                     "total_stops": len(route),
                     "route": [export_person(x) for x in route]
                 })
+                idx += 1
 
         return jsonify({
             "status": "success",
@@ -439,6 +424,11 @@ routes = solve(prepared)
             "cars": cars
         })
 
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
 # ==========================================
 # RUN
