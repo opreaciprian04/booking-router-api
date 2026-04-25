@@ -82,7 +82,7 @@ def get_bookings_for_today():
         SELECT id, name, phone, pickup_address,
                pickup_lat, pickup_lng, date
         FROM bookings
-        WHERE date::text = $1
+        WHERE date::text = $s
         AND pickup_lat IS NOT NULL
         AND pickup_lng IS NOT NULL
         ORDER BY id ASC
