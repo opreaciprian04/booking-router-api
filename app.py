@@ -1,56 +1,32 @@
-from flask import Flask, request, jsonify
-import math
+from flask import Flask, jsonify
 import os
-import traceback
-from collections import defaultdict
-
-# ==================================================
-# APP
-# ==================================================
+import math
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
 
 app = Flask(__name__)
 
-# ==================================================
+# ==========================================
 # CONFIG
-# ==================================================
+# ==========================================
 
 TIMISOARA = {
-    "name": "Timisoara Hub",
+    "name": "Timisoara",
     "lat": 45.7489,
     "lng": 21.2087
 }
 
 MAX_SEATS = 8
 
-# ==================================================
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# ==========================================
 # HELPERS
-# ==================================================
-
-def to_float(value, default=0.0):
-    try:
-        return float(value)
-    except:
-        return default
-
-
-def to_int(value, default=1):
-    try:
-        return int(value)
-    except:
-        return default
-
+# ==========================================
 
 def haversine(lat1, lon1, lat2, lon2):
-    """
-    Distance in KM
-    """
     R = 6371
-
-    lat1 = to_float(lat1)
-    lon1 = to_float(lon1)
-    lat2 = to_float(lat2)
-    lon2 = to_float(lon2)
-
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
 
@@ -62,249 +38,259 @@ def haversine(lat1, lon1, lat2, lon2):
     )
 
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return round(R * c, 2)
+    return R * c
 
 
-def seats_of(passenger):
-    seats = to_int(passenger.get("locuri", passenger.get("seats", 1)), 1)
-
-    if seats < 1:
-        return 1
-
-    if seats > MAX_SEATS:
-        return MAX_SEATS
-
-    return seats
-
-
-def detect_country(address):
-    text = str(address).lower()
-
-    countries = {
-        "Germania": ["germany", "deutschland", "germania"],
-        "Italia": ["italy", "italia"],
-        "Belgia": ["belgium", "belgia"],
-        "Olanda": ["netherlands", "holland", "olanda"],
-        "Austria": ["austria"],
-        "Franta": ["france", "franta"],
-        "Spania": ["spain", "espana", "spania"],
-        "Romania": ["romania"]
-    }
-
-    for country, words in countries.items():
-        for word in words:
-            if word in text:
-                return country
-
-    return "Alta"
-
-
-def pickup_to_hub_distance(p):
-    return haversine(
-        p.get("pickup_lat"),
-        p.get("pickup_lng"),
-        TIMISOARA["lat"],
-        TIMISOARA["lng"]
+def bearing(lat1, lon1, lat2, lon2):
+    y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
+    x = (
+        math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
+        - math.sin(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.cos(math.radians(lon2 - lon1))
     )
 
-
-def hub_to_destination_distance(p):
-    return haversine(
-        TIMISOARA["lat"],
-        TIMISOARA["lng"],
-        p.get("destination_lat"),
-        p.get("destination_lng")
-    )
+    brng = math.degrees(math.atan2(y, x))
+    return (brng + 360) % 360
 
 
-def safe_address(value, fallback="Necunoscut"):
-    if value is None:
-        return fallback
-    txt = str(value).strip()
-    return txt if txt else fallback
+def zone_from_bearing(b):
+    if b >= 315 or b < 45:
+        return "NORD"
+    elif b < 135:
+        return "EST"
+    elif b < 225:
+        return "SUD"
+    else:
+        return "VEST"
 
 
-# ==================================================
-# STAGE 1
-# Pickup -> Timisoara Hub
-# ==================================================
+# ==========================================
+# DB
+# ==========================================
 
-def build_stage_1(bookings):
-    vehicles = []
-    vehicle_id = 1
-    remaining = bookings[:]
+def get_bookings_for_today():
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    while remaining:
-        route = []
-        occupied = 0
+    today = datetime.now().date()
 
-        first = max(remaining, key=pickup_to_hub_distance)
+    cur.execute("""
+        SELECT id, name, phone, pickup_address,
+               pickup_lat, pickup_lng, date
+        FROM bookings
+        WHERE date = %s
+        AND pickup_lat IS NOT NULL
+        AND pickup_lng IS NOT NULL
+        ORDER BY id ASC
+    """, (today,))
 
-        route.append(first)
-        occupied += seats_of(first)
-        remaining.remove(first)
+    rows = cur.fetchall()
 
-        while remaining:
-            last = route[-1]
+    cur.close()
+    conn.close()
 
-            nearest = min(
-                remaining,
-                key=lambda x: haversine(
-                    last.get("pickup_lat"),
-                    last.get("pickup_lng"),
-                    x.get("pickup_lat"),
-                    x.get("pickup_lng")
-                )
-            )
+    return rows
 
-            if occupied + seats_of(nearest) > MAX_SEATS:
-                break
 
-            route.append(nearest)
-            occupied += seats_of(nearest)
-            remaining.remove(nearest)
+# ==========================================
+# CORE LOGIC
+# ==========================================
 
-        vehicles.append({
-            "vehicle": f"RO-{vehicle_id}",
-            "occupied_seats": occupied,
-            "free_seats": MAX_SEATS - occupied,
-            "passengers_count": len(route),
-            "route": [safe_address(p.get("pickup_address")) for p in route] + ["Timisoara Hub"],
-            "passengers": route
+def build_groups(rows):
+    enriched = []
+
+    for r in rows:
+        dist = haversine(
+            r["pickup_lat"],
+            r["pickup_lng"],
+            TIMISOARA["lat"],
+            TIMISOARA["lng"]
+        )
+
+        brg = bearing(
+            TIMISOARA["lat"],
+            TIMISOARA["lng"],
+            r["pickup_lat"],
+            r["pickup_lng"]
+        )
+
+        zone = zone_from_bearing(brg)
+
+        enriched.append({
+            **r,
+            "distance_km": round(dist, 1),
+            "zone": zone
         })
 
-        vehicle_id += 1
+    zones = {}
+    for row in enriched:
+        zones.setdefault(row["zone"], []).append(row)
 
-    return vehicles
+    trips = []
+    trip_no = 1
 
+    for zone_name, people in zones.items():
 
-# ==================================================
-# STAGE 2
-# Timisoara -> Europe Destinations
-# ==================================================
+        # cel mai departe primii
+        people.sort(key=lambda x: x["distance_km"], reverse=True)
 
-def build_stage_2(bookings):
-    grouped = defaultdict(list)
+        while people:
+            bus = people[:MAX_SEATS]
+            people = people[MAX_SEATS:]
 
-    for booking in bookings:
-        country = detect_country(booking.get("destination_address"))
-        grouped[country].append(booking)
-
-    vehicles = []
-    vehicle_id = 1
-
-    for country, passengers in grouped.items():
-        remaining = passengers[:]
-
-        while remaining:
-            route = []
-            occupied = 0
-
-            first = min(remaining, key=hub_to_destination_distance)
-
-            route.append(first)
-            occupied += seats_of(first)
-            remaining.remove(first)
-
-            while remaining:
-                last = route[-1]
-
-                nearest = min(
-                    remaining,
-                    key=lambda x: haversine(
-                        last.get("destination_lat"),
-                        last.get("destination_lng"),
-                        x.get("destination_lat"),
-                        x.get("destination_lng")
-                    )
-                )
-
-                if occupied + seats_of(nearest) > MAX_SEATS:
-                    break
-
-                route.append(nearest)
-                occupied += seats_of(nearest)
-                remaining.remove(nearest)
-
-            vehicles.append({
-                "vehicle": f"EU-{vehicle_id}",
-                "country": country,
-                "occupied_seats": occupied,
-                "free_seats": MAX_SEATS - occupied,
-                "passengers_count": len(route),
-                "route": ["Timisoara Hub"] + [
-                    safe_address(p.get("destination_address")) for p in route
-                ],
-                "passengers": route
+            trips.append({
+                "trip_id": f"BUS-{trip_no:03}",
+                "zone": zone_name,
+                "target": "Timisoara",
+                "passengers": bus,
+                "count": len(bus)
             })
 
-            vehicle_id += 1
+            trip_no += 1
 
-    return vehicles
-
-
-# ==================================================
-# ROUTES
-# ==================================================
-
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({
-        "status": "online",
-        "service": "Romania Pickup Optimizer Live"
-    })
+    return trips
 
 
-@app.route("/ping", methods=["GET", "POST"])
-def ping():
-    return jsonify({
-        "ok": True,
-        "method": request.method
-    })
+# ==========================================
+# ROUTE
+# ==========================================
 
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({
-        "healthy": True
-    })
-
-
-@app.route("/optimize", methods=["POST"])
+@app.route("/optimize", methods=["GET"])
 def optimize():
     try:
-        payload = request.get_json(silent=True) or {}
-        bookings = payload.get("bookings", [])
-
-        if not isinstance(bookings, list):
-            return jsonify({
-                "success": False,
-                "error": "bookings must be an array"
-            }), 400
-
-        stage1 = build_stage_1(bookings)
-        stage2 = build_stage_2(bookings)
+        rows = get_bookings_for_today()
+        trips = build_groups(rows)
 
         return jsonify({
-            "success": True,
-            "hub": "Timisoara",
-            "total_bookings": len(bookings),
-            "stage_1_country_pickups": stage1,
-            "stage_2_europe_routes": stage2
+            "status": "success",
+            "date": str(datetime.now().date()),
+            "target": TIMISOARA,
+            "total_bookings": len(rows),
+            "total_trips": len(trips),
+            "trips": trips
         })
 
     except Exception as e:
         return jsonify({
-            "success": False,
-            "error": str(e),
-            "trace": traceback.format_exc()
+            "status": "error",
+            "message": str(e)
         }), 500
 
 
-# ==================================================
-# START
-# ==================================================
+# ==========================================
+# MAIN
+# ==========================================
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# CONTINUAREA ALGORITMULUI
+# HUB TIMISOARA -> DESTINATII FINALE
+# Adauga sub functiile existente
+# ==========================================
+
+def build_dropoff_groups(rows):
+    """
+    Grupeaza pasagerii care au ajuns in Timisoara
+    folosind coordonatele destinatiei finale:
+    drop_lat / drop_lng
+    """
+
+    enriched = []
+
+    for r in rows:
+        if r["drop_lat"] is None or r["drop_lng"] is None:
+            continue
+
+        dist = haversine(
+            TIMISOARA["lat"],
+            TIMISOARA["lng"],
+            r["drop_lat"],
+            r["drop_lng"]
+        )
+
+        brg = bearing(
+            TIMISOARA["lat"],
+            TIMISOARA["lng"],
+            r["drop_lat"],
+            r["drop_lng"]
+        )
+
+        zone = zone_from_bearing(brg)
+
+        enriched.append({
+            **r,
+            "distance_km": round(dist, 1),
+            "zone": zone
+        })
+
+    # grupare pe zone
+    zones = {}
+    for row in enriched:
+        zones.setdefault(row["zone"], []).append(row)
+
+    trips = []
+    trip_no = 1
+
+    for zone_name, people in zones.items():
+
+        # cei mai indepartati primii
+        people.sort(key=lambda x: x["distance_km"], reverse=True)
+
+        while people:
+            bus = people[:MAX_SEATS]
+            people = people[MAX_SEATS:]
+
+            # ordonare opriri:
+            # de la aproape la departe sau invers
+            bus_sorted = sorted(
+                bus,
+                key=lambda x: x["distance_km"]
+            )
+
+            trips.append({
+                "trip_id": f"DROP-{trip_no:03}",
+                "type": "dropoff",
+                "zone": zone_name,
+                "start": "Timisoara",
+                "count": len(bus_sorted),
+                "route": [
+                    p["pickup_address"] for p in bus_sorted
+                ],
+                "passengers": bus_sorted
+            })
+
+            trip_no += 1
+
+    return trips
+
+
+# ==========================================
+# ENDPOINT NOU
+# ==========================================
+
+@app.route("/optimize_dropoffs", methods=["GET"])
+def optimize_dropoffs():
+    try:
+        rows = get_bookings_for_today()
+
+        trips = build_dropoff_groups(rows)
+
+        return jsonify({
+            "status": "success",
+            "mode": "Timisoara Hub -> Final Destinations",
+            "date": str(datetime.now().date()),
+            "target": "Timisoara",
+            "total_bookings": len(rows),
+            "total_trips": len(trips),
+            "trips": trips
+        })
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
