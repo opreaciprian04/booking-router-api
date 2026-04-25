@@ -151,7 +151,7 @@ def optimize():
 
         # aici logica ta existentă
         
-        trips = build_groups(rows)
+      
 
         return jsonify({
             "status": "success",
