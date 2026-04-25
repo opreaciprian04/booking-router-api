@@ -63,11 +63,11 @@ def get_bookings_for_tomorrow():
 
     cur.execute("""
         SELECT id,
-               customer_name,
+               name,
                pickup_address,
                pickup_lat,
                pickup_lng,
-               drop_address,
+               dropoff_address,
                drop_lat,
                drop_lng,
                persons
