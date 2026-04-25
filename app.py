@@ -438,11 +438,6 @@ routes = solve(prepared)
             "total_cars": len(cars),
             "cars": cars
         })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
 
 
 # ==========================================
