@@ -70,7 +70,9 @@ def get_bookings_for_tomorrow():
                dropoff_address,
                drop_lat,
                drop_lng,
-               persons
+               persons,
+               price,
+               notes
         FROM bookings
         WHERE date = %s
     """, (tomorrow,))
