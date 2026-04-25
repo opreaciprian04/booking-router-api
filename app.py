@@ -1,8 +1,6 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import os
 import math
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from datetime import date, timedelta
 
 app = Flask(__name__)
@@ -15,8 +13,6 @@ TIMISOARA = {
     "lng": 21.2087
 }
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
 
 # ==========================================
 # HELPERS
@@ -24,19 +20,31 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
-    dlat = math.radians(lat2-lat1)
-    dlon = math.radians(lon2-lon1)
 
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * \
-        math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    lat1 = float(lat1)
+    lon1 = float(lon1)
+    lat2 = float(lat2)
+    lon2 = float(lon2)
 
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * \
+        math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def bearing(lat1, lon1, lat2, lon2):
-    y = math.sin(math.radians(lon2-lon1)) * math.cos(math.radians(lat2))
-    x = math.cos(math.radians(lat1))*math.sin(math.radians(lat2)) - \
-        math.sin(math.radians(lat1))*math.cos(math.radians(lat2))*math.cos(math.radians(lon2-lon1))
+    lat1 = float(lat1)
+    lon1 = float(lon1)
+    lat2 = float(lat2)
+    lon2 = float(lon2)
+
+    y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
+    x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - \
+        math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
+        math.cos(math.radians(lon2 - lon1))
 
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
@@ -52,37 +60,16 @@ def zone_from_bearing(b):
 
 
 # ==========================================
-# DB
+# INPUT JSON (replaces database)
 # ==========================================
 
-def get_bookings_for_tomorrow():
-    tomorrow = date.today() + timedelta(days=1)
+def get_bookings_from_request():
+    data = request.get_json()
 
-    conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    if not data:
+        return []
 
-    cur.execute("""
-        SELECT id,
-               name,
-               pickup_address,
-               pickup_lat,
-               pickup_lng,
-               dropoff_address,
-               drop_lat,
-               drop_lng,
-               persons,
-               price,
-               notes
-        FROM bookings
-        WHERE date = %s
-    """, (tomorrow,))
-
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    return rows
+    return data.get("bookings", [])
 
 
 # ==========================================
@@ -94,7 +81,7 @@ def build_groups(rows):
 
     for r in rows:
 
-        if not r["pickup_lat"] or not r["pickup_lng"]:
+        if not r.get("pickup_lat") or not r.get("pickup_lng"):
             continue
 
         dist = haversine(
@@ -136,7 +123,7 @@ def build_groups(rows):
             remain = []
 
             for p in people:
-                needed = p.get("persons", 1)
+                needed = int(p.get("persons", 1))
 
                 if seats + needed <= MAX_SEATS:
                     bus.append(p)
@@ -163,21 +150,36 @@ def build_groups(rows):
 # API
 # ==========================================
 
-@app.route("/optimize")
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "online",
+        "service": "Trip Optimizer JSON Mode"
+    })
+
+
+@app.route("/optimize", methods=["POST"])
 def optimize():
 
     try:
-        rows = get_bookings_for_tomorrow()
+        rows = get_bookings_from_request()
+
+        if not rows:
+            return jsonify({
+                "status": "error",
+                "message": "No bookings received"
+            }), 400
+
         trips = build_groups(rows)
 
         return jsonify({
-    "status": "success",
-    "generated_at": str(date.today()),
-    "for_date": str(date.today() + timedelta(days=1)),
-    "total_bookings": len(rows),
-    "total_trips": len(trips),
-    "trips": trips
-})
+            "status": "success",
+            "generated_at": str(date.today()),
+            "for_date": str(date.today() + timedelta(days=1)),
+            "total_bookings": len(rows),
+            "total_trips": len(trips),
+            "trips": trips
+        })
 
     except Exception as e:
         return jsonify({
