@@ -209,12 +209,32 @@ def solve(bookings):
 
     demand_idx = routing.RegisterUnaryTransitCallback(demand_callback)
 
+   # Capacity
     routing.AddDimensionWithVehicleCapacity(
         demand_idx,
         0,
         [MAX_SEATS] * vehicles,
         True,
         "Capacity"
+    )
+
+    # Stops max 7
+    def stop_callback(from_index):
+        node = manager.IndexToNode(from_index)
+
+        if node == 0:
+            return 0
+
+        return 1
+
+    stop_idx = routing.RegisterUnaryTransitCallback(stop_callback)
+
+    routing.AddDimensionWithVehicleCapacity(
+        stop_idx,
+        0,
+        [MAX_STOPS] * vehicles,
+        True,
+        "Stops"
     )
      def stop_callback(from_index):
         node = manager.IndexToNode(from_index)
