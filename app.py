@@ -98,11 +98,7 @@ def prepare(bookings):
             TIMISOARA["lng"]
         )
 
-        if start_km < MIN_START_DISTANCE_KM:
-            skipped.append({
-                "id": b.get("id"),
-                "reason": f"pickup under {MIN_START_DISTANCE_KM} km from Timisoara"
-            })
+        
             continue
 
         drop_lat = safe_float(b.get("drop_lat"))
