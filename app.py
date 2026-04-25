@@ -1,9 +1,11 @@
 from flask import Flask, jsonify, request
-import os
 import math
 
 app = Flask(__name__)
 
+# ==========================================
+# CONFIG
+# ==========================================
 MAX_SEATS = 8
 
 TIMISOARA = {
@@ -13,182 +15,134 @@ TIMISOARA = {
 }
 
 # ==========================================
-# HELPERS
+# SAMPLE INPUT
+# Primește JSON listă rezervări
+# fiecare rezervare trebuie să aibă:
+# id, name, pickup_lat, pickup_lng
 # ==========================================
 
+# ==========================================
+# DISTANCE FUNCTION
+# ==========================================
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
+    R = 6371  # km
 
-    lat1 = float(lat1)
-    lon1 = float(lon1)
-    lat2 = float(lat2)
-    lon2 = float(lon2)
-
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
+    dLat = math.radians(lat2 - lat1)
+    dLon = math.radians(lon2 - lon1)
 
     a = (
-        math.sin(dlat / 2) ** 2
+        math.sin(dLat / 2) ** 2
         + math.cos(math.radians(lat1))
         * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
+        * math.sin(dLon / 2) ** 2
     )
 
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 
-def bearing(lat1, lon1, lat2, lon2):
-    lat1 = float(lat1)
-    lon1 = float(lon1)
-    lat2 = float(lat2)
-    lon2 = float(lon2)
-
-    y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
-    x = (
-        math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
-        - math.sin(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.cos(math.radians(lon2 - lon1))
+# ==========================================
+# SCORE: apropiere între oameni + direcție spre Timișoara
+# ==========================================
+def pair_score(a, b):
+    dist_between = haversine(
+        a["pickup_lat"], a["pickup_lng"],
+        b["pickup_lat"], b["pickup_lng"]
     )
 
-    return (math.degrees(math.atan2(y, x)) + 360) % 360
+    dist_a_tm = haversine(
+        a["pickup_lat"], a["pickup_lng"],
+        TIMISOARA["lat"], TIMISOARA["lng"]
+    )
 
+    dist_b_tm = haversine(
+        b["pickup_lat"], b["pickup_lng"],
+        TIMISOARA["lat"], TIMISOARA["lng"]
+    )
 
-def zone_from_bearing(b):
-    if b < 90:
-        return "NE"
-    elif b < 180:
-        return "SE"
-    elif b < 270:
-        return "SW"
-    return "NW"
-
-
-# ==========================================
-# INPUT JSON
-# Grupează TOT ce primește în input
-# Nu contează data
-# ==========================================
-
-def get_bookings_from_request():
-    data = request.get_json(silent=True) or {}
-
-    # dacă vine direct listă
-    if isinstance(data, list):
-        return data
-
-    # dacă vine {"bookings":[...]}
-    if isinstance(data, dict):
-        return data.get("bookings", [])
-
-    return []
+    # vrem apropiere între pasageri
+    # și distanță similară până la Timișoara
+    return dist_between + abs(dist_a_tm - dist_b_tm)
 
 
 # ==========================================
-# CORE
+# GROUPING
 # ==========================================
-
-def build_groups(rows):
-    enriched = []
-
-    for r in rows:
-
-        if not r.get("pickup_lat") or not r.get("pickup_lng"):
-            continue
-
-        dist = haversine(
-            r["pickup_lat"],
-            r["pickup_lng"],
-            TIMISOARA["lat"],
-            TIMISOARA["lng"]
-        )
-
-        brg = bearing(
-            TIMISOARA["lat"],
-            TIMISOARA["lng"],
-            r["pickup_lat"],
-            r["pickup_lng"]
-        )
-
-        enriched.append({
-            **r,
-            "distance_km": round(dist, 1),
-            "zone": zone_from_bearing(brg)
-        })
-
-    zones = {}
-
-    for p in enriched:
-        zones.setdefault(p["zone"], []).append(p)
-
+def optimize_groups(bookings):
+    unassigned = bookings[:]
     trips = []
-    trip_no = 1
 
-    for zone, people in zones.items():
+    while unassigned:
+        seed = unassigned.pop(0)
+        car = [seed]
 
-        people.sort(key=lambda x: x["distance_km"], reverse=True)
+        while len(car) < MAX_SEATS and unassigned:
+            best = min(unassigned, key=lambda x: sum(pair_score(x, c) for c in car))
+            car.append(best)
+            unassigned.remove(best)
 
-        while people:
-
-            bus = []
-            seats = 0
-            remain = []
-
-            for p in people:
-                needed = int(p.get("persons", 1))
-
-                if seats + needed <= MAX_SEATS:
-                    bus.append(p)
-                    seats += needed
-                else:
-                    remain.append(p)
-
-            people = remain
-
-            trips.append({
-                "trip_id": f"BUS-{trip_no:03}",
-                "zone": zone,
-                "count_people": seats,
-                "bookings": len(bus),
-                "passengers": bus
-            })
-
-            trip_no += 1
+        trips.append(car)
 
     return trips
 
 
 # ==========================================
-# API
+# SORT PICKUP ORDER
+# De la cel mai departe -> spre Timișoara
 # ==========================================
+def route_order(group):
+    return sorted(
+        group,
+        key=lambda x: haversine(
+            x["pickup_lat"], x["pickup_lng"],
+            TIMISOARA["lat"], TIMISOARA["lng"]
+        ),
+        reverse=True
+    )
 
-@app.route("/")
-def home():
+
+# ==========================================
+# API ROUTE
+# POST /optimize
+# ==========================================
+@app.route("/optimize", methods=["POST"])
+def optimize():
+    data = request.json
+
+    if not data:
+        return jsonify({"error": "No JSON data"}), 400
+
+    trips = optimize_groups(data)
+
+    result = []
+
+    for i, trip in enumerate(trips, start=1):
+        ordered = route_order(trip)
+
+        result.append({
+            "car_number": i,
+            "seats_used": len(ordered),
+            "pickup_order": [
+                {
+                    "id": p["id"],
+                    "name": p["name"],
+                    "pickup_lat": p["pickup_lat"],
+                    "pickup_lng": p["pickup_lng"]
+                }
+                for p in ordered
+            ],
+            "destination": "Timisoara"
+        })
+
     return jsonify({
-        "status": "online",
-        "service": "Trip Optimizer JSON Mode"
+        "status": "success",
+        "total_cars": len(result),
+        "trips": result
     })
 
 
-@app.route("/optimize", methods=["GET", "POST"])
-def optimize():
-    try:
-        rows = get_bookings_from_request()
-        trips = build_groups(rows)
-
-        return jsonify({
-            "status": "success",
-            "total_received": len(rows),
-            "trips_count": len(trips),
-            "trips": trips
-        })
-
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-
+# ==========================================
+# RUN
+# ==========================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run(host="0.0.0.0", port=5000)
