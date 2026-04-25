@@ -105,7 +105,7 @@ def route_order(group):
 # API ROUTE
 # POST /optimize
 # ==========================================
-@app.route("/optimize", methods=["POST"])
+@app.route("/optimize", methods=["GET","POST"])
 def optimize():
     data = request.json
 
