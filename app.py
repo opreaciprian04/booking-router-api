@@ -373,15 +373,73 @@ def optimize():
 
         routes = solve(prepared)
 
-        cars = []
+        # ÎNLOCUIEȘTE doar partea unde construiești lista cars din /optimize
+# cu varianta de mai jos:
 
-        for i, route in enumerate(routes, start=1):
-            cars.append({
-                "car_number": i,
-                "seats_used": sum(x["persons"] for x in route),
-                "total_stops": len(route),
-                "route": [export_person(x) for x in route]
-            })
+cars = []
+small_routes = []
+
+for route in routes:
+    seats_used = sum(x["persons"] for x in route)
+
+    if seats_used >= 3:
+        cars.append(route)
+    else:
+        small_routes.extend(route)
+
+# redistribuie rezervările din mașinile sub 3 persoane
+for booking in small_routes:
+    added = False
+
+    for car in cars:
+        current_seats = sum(x["persons"] for x in car)
+
+        if (
+            current_seats + booking["persons"] <= MAX_SEATS
+            and len(car) < MAX_STOPS
+        ):
+            car.append(booking)
+            added = True
+            break
+
+    # dacă nu încape nicăieri, creează mașină nouă doar la final
+    if not added:
+        cars.append([booking])
+
+# curățare finală: scoate mașinile sub 3 persoane dacă mai există
+final_cars = []
+waiting = []
+
+for car in cars:
+    seats_used = sum(x["persons"] for x in car)
+
+    if seats_used >= 3:
+        final_cars.append(car)
+    else:
+        waiting.extend(car)
+
+# încearcă din nou să pui restul în mașini valide
+for booking in waiting:
+    for car in final_cars:
+        current_seats = sum(x["persons"] for x in car)
+
+        if (
+            current_seats + booking["persons"] <= MAX_SEATS
+            and len(car) < MAX_STOPS
+        ):
+            car.append(booking)
+            break
+
+# export json
+cars = []
+
+for i, route in enumerate(final_cars, start=1):
+    cars.append({
+        "car_number": i,
+        "seats_used": sum(x["persons"] for x in route),
+        "total_stops": len(route),
+        "route": [export_person(x) for x in route]
+    })
 
         return jsonify({
             "status": "success",
