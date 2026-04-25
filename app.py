@@ -84,7 +84,8 @@ def get_bookings_for_today():
                pickup_lat, pickup_lng, "date"
         FROM bookings
         WHERE "date" = %s
-         
+          AND pickup_lat IS NOT NULL
+          AND pickup_lng IS NOT NULL
         ORDER BY id ASC
     """, (today,))
 
