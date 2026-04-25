@@ -69,24 +69,20 @@ def zone_from_bearing(b):
 # DB
 # ==========================================
 
-def get_bookings_for_today():
-    conn = psycopg2.connect(
-        DATABASE_URL,
-        sslmode="require"
-    )
+from datetime import date, timedelta
+import psycopg2
 
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+def get_bookings_for_tomorrow():
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
 
-    today = datetime.now().date().isoformat()
+    tomorrow = date.today() + timedelta(days=1)
 
     cur.execute("""
-        SELECT id, name, phone, pickup_address,
-               pickup_lat, pickup_lng, "date"
+        SELECT *
         FROM bookings
-        WHERE "date" = %s
-         
-        ORDER BY id ASC
-    """, (today,))
+        WHERE date = %s
+    """, (tomorrow,))
 
     rows = cur.fetchall()
 
