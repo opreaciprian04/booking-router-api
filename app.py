@@ -156,7 +156,7 @@ def optimize_route(car):
 # =====================================================
 # API
 # =====================================================
-@app.route("/group", methods=["POST"])
+@app.route("/group", methods=["POST","GET"])
 def group():
     data = request.get_json()
 
