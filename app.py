@@ -1,22 +1,29 @@
 from flask import Flask, request, jsonify
-from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-import math
 import os
+import math
+from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
+# =====================================================
+# FLASK APP
+# =====================================================
 app = Flask(__name__)
 
 # =====================================================
 # CONFIG
 # =====================================================
 MAX_SEATS = 8
-TIMISOARA_LAT = 45.7489
-TIMISOARA_LNG = 21.2087
+
+TIMISOARA = {
+    "id": "TIMISOARA",
+    "lat": 45.7489,
+    "lng": 21.2087
+}
 
 # =====================================================
-# DISTANCE
+# DISTANCE HELPERS
 # =====================================================
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
+    R = 6371.0
 
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -32,113 +39,159 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 
-def km(a, b):
-    return haversine(a["lat"], a["lng"], b["lat"], b["lng"])
+def distance(a, b):
+    return haversine(
+        float(a["lat"]),
+        float(a["lng"]),
+        float(b["lat"]),
+        float(b["lng"])
+    )
 
 
 # =====================================================
-# MAIN LOGIC
+# VALIDATION
 # =====================================================
-def build_cars(bookings):
+def normalize_bookings(bookings):
+    valid = []
 
-    timisoara = {
-        "id": 0,
-        "lat": TIMISOARA_LAT,
-        "lng": TIMISOARA_LNG
-    }
+    for item in bookings:
+        try:
+            valid.append({
+                "id": item.get("id"),
+                "lat": float(item.get("lat")),
+                "lng": float(item.get("lng"))
+            })
+        except:
+            pass
+
+    return valid
+
+
+# =====================================================
+# GROUPING LOGIC
+# =====================================================
+def group_into_cars(bookings):
+    """
+    Grupeaza simplu in masini de max 8:
+    cei mai departe de Timisoara primii
+    """
 
     for b in bookings:
-        b["dist_to_tm"] = km(b, timisoara)
+        b["dist_to_tm"] = distance(b, TIMISOARA)
 
     bookings.sort(key=lambda x: x["dist_to_tm"], reverse=True)
 
-    used = set()
     cars = []
+    current = []
 
-    for starter in bookings:
+    for b in bookings:
+        current.append(b)
 
-        if starter["id"] in used:
-            continue
+        if len(current) >= MAX_SEATS:
+            cars.append(current)
+            current = []
 
-        car = [starter]
-        used.add(starter["id"])
-
-        starter_dist = starter["dist_to_tm"]
-
-        for candidate in bookings:
-
-            if candidate["id"] in used:
-                continue
-
-            if len(car) >= MAX_SEATS:
-                break
-
-            if candidate["dist_to_tm"] >= starter_dist:
-                continue
-
-            lateral = km(starter, candidate)
-
-            if lateral <= 60:
-                car.append(candidate)
-                used.add(candidate["id"])
-
-        car.sort(key=lambda x: x["dist_to_tm"], reverse=True)
-        cars.append(car)
+    if current:
+        cars.append(current)
 
     return cars
 
 
 # =====================================================
-# ORTOOLS
+# ORTOOLS ROUTE OPTIMIZER
 # =====================================================
-def optimize_route(car):
+def optimize_route(passengers):
+    """
+    Optimizeaza pickup route catre Timisoara
+    Start = primul pasager
+    End = Timisoara
+    """
 
-    nodes = car + [{
-        "id": "TIMISOARA",
-        "lat": TIMISOARA_LAT,
-        "lng": TIMISOARA_LNG
-    }]
+    if len(passengers) <= 1:
+        return passengers
 
-    n = len(nodes)
+    nodes = passengers[:] + [TIMISOARA]
 
-    manager = pywrapcp.RoutingIndexManager(n, 1, 0, n - 1)
+    starts = [0]
+    ends = [len(nodes) - 1]
+
+    manager = pywrapcp.RoutingIndexManager(
+        len(nodes),
+        1,
+        starts,
+        ends
+    )
+
     routing = pywrapcp.RoutingModel(manager)
 
     def distance_callback(from_index, to_index):
         f = manager.IndexToNode(from_index)
         t = manager.IndexToNode(to_index)
-        return int(km(nodes[f], nodes[t]) * 1000)
 
-    transit = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit)
+        return int(distance(nodes[f], nodes[t]) * 1000)
+
+    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
     search = pywrapcp.DefaultRoutingSearchParameters()
     search.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     )
 
+    search.local_search_metaheuristic = (
+        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    )
+
+    search.time_limit.seconds = 2
+
     solution = routing.SolveWithParameters(search)
 
     if not solution:
-        return car
+        return passengers
 
     index = routing.Start(0)
     route = []
 
     while not routing.IsEnd(index):
-        node = manager.IndexToNode(index)
-        route.append(nodes[node])
+        node_index = manager.IndexToNode(index)
+
+        if nodes[node_index]["id"] != "TIMISOARA":
+            route.append(nodes[node_index])
+
         index = solution.Value(routing.NextVar(index))
 
-    route.append(nodes[manager.IndexToNode(index)])
-
-    return [x for x in route if x["id"] != "TIMISOARA"]
+    return route
 
 
 # =====================================================
-# ROUTES (ANTI 404)
+# MAIN PROCESS
 # =====================================================
+def process(bookings):
+    bookings = normalize_bookings(bookings)
 
+    if not bookings:
+        return []
+
+    cars = group_into_cars(bookings)
+
+    result = []
+
+    for i, car in enumerate(cars, start=1):
+        optimized = optimize_route(car)
+
+        result.append({
+            "car_id": i,
+            "seats_used": len(optimized),
+            "route": optimized,
+            "destination": "Timisoara"
+        })
+
+    return result
+
+
+# =====================================================
+# ROUTES
+# =====================================================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -156,10 +209,9 @@ def health():
 @app.route("/group", methods=["GET", "POST"])
 def group():
 
-    # daca intri din browser
     if request.method == "GET":
         return jsonify({
-            "message": "Use POST with JSON bookings",
+            "message": "Use POST JSON",
             "example": {
                 "bookings": [
                     {"id": 1, "lat": 46.77, "lng": 23.59},
@@ -168,29 +220,23 @@ def group():
             }
         })
 
-    # POST
-    data = request.get_json(silent=True) or {}
-    bookings = data.get("bookings", [])
+    try:
+        data = request.get_json(silent=True) or {}
+        bookings = data.get("bookings", [])
 
-    if not bookings:
-        return jsonify({"cars": []})
+        result = process(bookings)
 
-    cars = build_cars(bookings)
-
-    result = []
-
-    for idx, car in enumerate(cars, start=1):
-
-        optimized = optimize_route(car)
-
-        result.append({
-            "car_id": idx,
-            "seats_used": len(optimized),
-            "route": optimized,
-            "final_destination": "Timisoara"
+        return jsonify({
+            "success": True,
+            "cars": result
         })
 
-    return jsonify({"cars": result})
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "cars": []
+        }), 200
 
 
 # =====================================================
