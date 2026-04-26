@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 import math
+import os
 
 app = Flask(__name__)
 
@@ -39,12 +40,6 @@ def km(a, b):
 # MAIN LOGIC
 # =====================================================
 def build_cars(bookings):
-    """
-    Ideea:
-    - prima persoana luata = cea mai departe de Timisoara
-    - restul persoanelor din masina trebuie sa fie pe traseu
-    - toti ajung in acelasi timp in Timisoara
-    """
 
     timisoara = {
         "id": 0,
@@ -52,62 +47,51 @@ def build_cars(bookings):
         "lng": TIMISOARA_LNG
     }
 
-    # calculeaza distanta la Timisoara
     for b in bookings:
         b["dist_to_tm"] = km(b, timisoara)
 
-    # ordonare descrescator (cei mai departe primii)
     bookings.sort(key=lambda x: x["dist_to_tm"], reverse=True)
 
     used = set()
     cars = []
 
-    for i, starter in enumerate(bookings):
+    for starter in bookings:
+
         if starter["id"] in used:
             continue
 
         car = [starter]
         used.add(starter["id"])
 
-        # prima persoana = reper
         starter_dist = starter["dist_to_tm"]
 
         for candidate in bookings:
+
             if candidate["id"] in used:
                 continue
 
             if len(car) >= MAX_SEATS:
                 break
 
-            # conditie:
-            # candidatul trebuie sa fie mai aproape de Timisoara
             if candidate["dist_to_tm"] >= starter_dist:
                 continue
 
-            # trebuie sa fie relativ aproape de traseul starter -> Timisoara
             lateral = km(starter, candidate)
 
             if lateral <= 60:
                 car.append(candidate)
                 used.add(candidate["id"])
 
-        # ordonam masina:
-        # cel mai departe -> cel mai aproape
         car.sort(key=lambda x: x["dist_to_tm"], reverse=True)
-
         cars.append(car)
 
     return cars
 
 
 # =====================================================
-# OPTIONAL ORTOOLS OPTIMIZATION PER CAR
+# ORTOOLS
 # =====================================================
 def optimize_route(car):
-    """
-    optimizeaza ordinea pickup-urilor in masina
-    ultimul nod = Timisoara
-    """
 
     nodes = car + [{
         "id": "TIMISOARA",
@@ -123,7 +107,6 @@ def optimize_route(car):
     def distance_callback(from_index, to_index):
         f = manager.IndexToNode(from_index)
         t = manager.IndexToNode(to_index)
-
         return int(km(nodes[f], nodes[t]) * 1000)
 
     transit = routing.RegisterTransitCallback(distance_callback)
@@ -149,17 +132,44 @@ def optimize_route(car):
 
     route.append(nodes[manager.IndexToNode(index)])
 
-    # scoatem Timisoara din raspuns final
     return [x for x in route if x["id"] != "TIMISOARA"]
 
 
 # =====================================================
-# API
+# ROUTES (ANTI 404)
 # =====================================================
-@app.route("/group", methods=["POST","GET"])
-def group():
-    data = request.get_json()
 
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "status": "online",
+        "message": "Server running",
+        "endpoint": "/group"
+    })
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True})
+
+
+@app.route("/group", methods=["GET", "POST"])
+def group():
+
+    # daca intri din browser
+    if request.method == "GET":
+        return jsonify({
+            "message": "Use POST with JSON bookings",
+            "example": {
+                "bookings": [
+                    {"id": 1, "lat": 46.77, "lng": 23.59},
+                    {"id": 2, "lat": 46.17, "lng": 21.31}
+                ]
+            }
+        })
+
+    # POST
+    data = request.get_json(silent=True) or {}
     bookings = data.get("bookings", [])
 
     if not bookings:
@@ -170,6 +180,7 @@ def group():
     result = []
 
     for idx, car in enumerate(cars, start=1):
+
         optimized = optimize_route(car)
 
         result.append({
@@ -186,4 +197,5 @@ def group():
 # RUN
 # =====================================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
