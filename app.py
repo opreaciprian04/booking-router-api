@@ -100,7 +100,7 @@ def group_into_cars(bookings):
 # =====================================================
 # ORTOOLS ROUTE OPTIMIZER
 # =====================================================
-def optimize_route(passengers):
+def optimize(passengers):
     """
     Optimizeaza pickup route catre Timisoara
     Start = primul pasager
@@ -177,7 +177,7 @@ def process(bookings):
     result = []
 
     for i, car in enumerate(cars, start=1):
-        optimized = optimize_route(car)
+        optimized = optimize(car)
 
         result.append({
             "car_id": i,
@@ -242,6 +242,23 @@ def group():
 # =====================================================
 # RUN
 # =====================================================
+from flask import Flask, request, jsonify
+import os
+
+app = Flask(__name__)
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Server OK"
+
+@app.route("/optimize", methods=["POST"])
+def optimize():
+    data = request.get_json(force=True)
+    return jsonify({
+        "status": "success",
+        "received": data
+    })
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
