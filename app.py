@@ -252,11 +252,15 @@ def home():
     return "Server OK"
 
 @app.route("/optimize", methods=["POST"])
-def optimize():
+def optimize_route():
     data = request.get_json(force=True)
+    bookings = data.get("bookings", [])
+
+    result = process(bookings)
+
     return jsonify({
-        "status": "success",
-        "received": data
+        "success": True,
+        "cars": result
     })
 
 if __name__ == "__main__":
