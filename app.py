@@ -267,12 +267,26 @@ def group():
 def optimize_endpoint():
     try:
         data = request.get_json(force=True)
-        bookings = data.get("bookings", [])
+
+        # caz 1: {"bookings":[...]}
+        if isinstance(data, dict):
+            bookings = data.get("bookings", [])
+
+        # caz 2: direct listă [...]
+        elif isinstance(data, list):
+            if len(data) > 0 and isinstance(data[0], dict) and "bookings" in data[0]:
+                bookings = data[0]["bookings"]
+            else:
+                bookings = data
+
+        else:
+            bookings = []
 
         result = process(bookings)
 
         return jsonify({
             "success": True,
+            "received": len(bookings),
             "cars": result
         })
 
