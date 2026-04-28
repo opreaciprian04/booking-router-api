@@ -197,7 +197,7 @@ def optimize():
                 "address": pick(r, ["address", "pickup_address"], ""),
                 "pickup_lat": pickup_lat,
                 "pickup_lng": pickup_lng,
-                "dropoff_address": dropoff_address,
+                "dropoff_address": pick(r,["dropoff_address"], ""),
                 "dropoff_lat": dropoff_lat,
                 "dropoff_lng": dropoff_lng,
                 "seats": seats
