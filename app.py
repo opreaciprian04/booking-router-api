@@ -202,7 +202,7 @@ def optimize():
                 "dropoff_lng": dropoff_lng,
                 "seats": seats,
                 "price": pick(r,["price"], ""),
-                "notes": pick(r["note"], ""),
+                "notes": pick(r["notes"], ""),
             }
 
             booking["dist_to_tm"] = haversine(
