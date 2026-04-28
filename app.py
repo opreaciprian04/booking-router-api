@@ -20,12 +20,16 @@ TIMISOARA = {
 # =====================================================
 def to_float(v):
     try:
+        if v is None or v == "":
+            return 0.0
         return float(v)
     except:
         return 0.0
 
 def to_int(v, default=1):
     try:
+        if v is None or v == "":
+            return default
         return int(v)
     except:
         return default
@@ -41,36 +45,38 @@ def haversine(lat1, lng1, lat2, lng2):
     dlat = lat2 - lat1
     dlng = lng2 - lng1
 
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
     return R * c
 
 # =====================================================
-# ORTOOLS ROUTE
+# GET FIRST EXISTING FIELD
+# =====================================================
+def pick(obj, keys, default=None):
+    for k in keys:
+        if k in obj and obj[k] not in [None, ""]:
+            return obj[k]
+    return default
+
+# =====================================================
+# ORTOOLS
 # =====================================================
 def optimize_route(bookings):
     if len(bookings) <= 1:
         return bookings
 
-    points = []
-    for b in bookings:
-        points.append({
-            "lat": b["pickup_lat"],
-            "lng": b["pickup_lng"]
-        })
-
-    size = len(points)
+    size = len(bookings)
 
     matrix = []
     for i in range(size):
         row = []
         for j in range(size):
             dist = haversine(
-                points[i]["lat"],
-                points[i]["lng"],
-                points[j]["lat"],
-                points[j]["lng"]
+                bookings[i]["pickup_lat"],
+                bookings[i]["pickup_lng"],
+                bookings[j]["pickup_lat"],
+                bookings[j]["pickup_lng"]
             )
             row.append(int(dist * 1000))
         matrix.append(row)
@@ -78,18 +84,18 @@ def optimize_route(bookings):
     manager = pywrapcp.RoutingIndexManager(size, 1, 0)
     routing = pywrapcp.RoutingModel(manager)
 
-    def distance_callback(from_index, to_index):
+    def callback(from_index, to_index):
         f = manager.IndexToNode(from_index)
         t = manager.IndexToNode(to_index)
         return matrix[f][t]
 
-    transit_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_index)
+    transit = routing.RegisterTransitCallback(callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(transit)
 
-    search = pywrapcp.DefaultRoutingSearchParameters()
-    search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    params = pywrapcp.DefaultRoutingSearchParameters()
+    params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
 
-    solution = routing.SolveWithParameters(search)
+    solution = routing.SolveWithParameters(params)
 
     if not solution:
         return bookings
@@ -105,62 +111,121 @@ def optimize_route(bookings):
     return ordered
 
 # =====================================================
-# ROUTES
+# HOME
 # =====================================================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "success": True,
-        "message": "RideShare API online"
+        "message": "API online"
     })
 
+# =====================================================
+# MAIN
+# =====================================================
 @app.route("/optimize", methods=["POST"])
 def optimize():
+
     try:
         data = request.get_json(force=True)
-        raw_bookings = data.get("bookings", [])
+
+        # ==========================================
+        # ACCEPT ALL POSSIBLE N8N FORMATS
+        # ==========================================
+        raw_bookings = []
+
+        if isinstance(data, list):
+            raw_bookings = data
+
+        elif isinstance(data, dict):
+
+            if "bookings" in data:
+                raw_bookings = data["bookings"]
+
+            elif "data" in data:
+                raw_bookings = data["data"]
+
+            elif "items" in data:
+                raw_bookings = data["items"]
+
+            else:
+                # single booking object
+                raw_bookings = [data]
 
         if not raw_bookings:
             return jsonify({
                 "success": True,
                 "cars_received": 0,
+                "received_payload": data,
                 "cars": []
             })
 
         bookings = []
 
         # ==========================================
-        # Normalize input from JavaScript
+        # NORMALIZE BOOKINGS
         # ==========================================
         for r in raw_bookings:
+
+            pickup_lat = to_float(pick(r, [
+                "pickup_lat", "lat", "pickupLat"
+            ]))
+
+            pickup_lng = to_float(pick(r, [
+                "pickup_lng", "lng", "pickupLng"
+            ]))
+
+            dropoff_lat = to_float(pick(r, [
+                "dropoff_lat", "dest_lat"
+            ]))
+
+            dropoff_lng = to_float(pick(r, [
+                "dropoff_lng", "dest_lng"
+            ]))
+
+            seats = to_int(pick(r, [
+                "seats", "persons", "passengers"
+            ]), 1)
+
+            if pickup_lat == 0 or pickup_lng == 0:
+                continue
+
             booking = {
-                "id": r.get("id"),
-                "pickup_lat": to_float(r.get("pickup_lat")),
-                "pickup_lng": to_float(r.get("pickup_lng")),
-                "dropoff_lat": to_float(r.get("dropoff_lat")),
-                "dropoff_lng": to_float(r.get("dropoff_lng")),
-                "seats": to_int(r.get("seats"), 1),
-                "name": r.get("name", ""),
-                "phone": r.get("phone", ""),
-                "address": r.get("address", "")
+                "id": pick(r, ["id"], ""),
+                "name": pick(r, ["name"], ""),
+                "phone": pick(r, ["phone"], ""),
+                "address": pick(r, ["address", "pickup_address"], ""),
+                "pickup_lat": pickup_lat,
+                "pickup_lng": pickup_lng,
+                "dropoff_lat": dropoff_lat,
+                "dropoff_lng": dropoff_lng,
+                "seats": seats
             }
 
             booking["dist_to_tm"] = haversine(
-                booking["pickup_lat"],
-                booking["pickup_lng"],
+                pickup_lat,
+                pickup_lng,
                 TIMISOARA["lat"],
                 TIMISOARA["lng"]
             )
 
             bookings.append(booking)
 
+        if not bookings:
+            return jsonify({
+                "success": True,
+                "cars_received": 0,
+                "reason": "No valid coordinates",
+                "cars": []
+            })
+
         # ==========================================
-        # Sort farthest first
+        # SORT FAR FIRST
         # ==========================================
         bookings.sort(key=lambda x: x["dist_to_tm"], reverse=True)
 
         # ==========================================
-        # Build cars max 8 seats
+        # BUILD CARS
         # ==========================================
         cars = []
         current = []
@@ -168,14 +233,14 @@ def optimize():
         car_id = 1
 
         for b in bookings:
-            seats = b["seats"]
 
-            if seats > MAX_SEATS:
+            if b["seats"] > MAX_SEATS:
                 continue
 
-            if used + seats <= MAX_SEATS:
+            if used + b["seats"] <= MAX_SEATS:
                 current.append(b)
-                used += seats
+                used += b["seats"]
+
             else:
                 route = optimize_route(current)
 
@@ -188,7 +253,7 @@ def optimize():
 
                 car_id += 1
                 current = [b]
-                used = seats
+                used = b["seats"]
 
         if current:
             route = optimize_route(current)
@@ -203,6 +268,7 @@ def optimize():
         return jsonify({
             "success": True,
             "cars_received": len(cars),
+            "valid_bookings": len(bookings),
             "cars": cars
         })
 
