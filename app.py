@@ -202,6 +202,7 @@ def optimize():
                 "dropoff_lng": dropoff_lng,
                 "seats": seats,
                 "price": pick(r,["price"], ""),
+                "notes": pick(r,["notes"], ""),
             
             }
 
